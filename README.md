@@ -1,0 +1,2 @@
+# LZJB
+LZJB compression algorithm
