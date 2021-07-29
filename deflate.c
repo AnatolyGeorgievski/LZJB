@@ -91,25 +91,6 @@ uint16_t* btree_code_order(uint16_t *alphabet, int alpha_size, uint8_t *bl_count
     }
     return alphabet;
 }
-#if 0
-/*!
-    \return возвращает индекс в отсортированном массиве алфавита
- */
-uint32_t btree_search(uint8_t *bl_count)
-{
-    uint32_t bt_code=0, bt_offset=0, code=0;
-    int i=0;
-    for(i=0; i<=MAX_BITS; i++, bt_code <<= 1) {// заменить на while, убрать проверку
-        code = huffman_read_bit(code, 1);
-        if (bl_count[i]==0) continue;
-        if (code - bt_code < bl_count[i]) break;
-        bt_code   += bl_count[i];
-        bt_offset += bl_count[i];
-    }
-    return bt_offset + (code - bt_code);
-}
-
-#endif // 0
 
 #include <intrin.h>
 uint8_t huffman_read_test(uint32_t code, long* src, int offset, int n){
@@ -124,11 +105,11 @@ uint8_t huffman_read_test2(uint32_t code, long* src, int offset){
     code = (code<<1) | _bittest64 (src, offset);//, code, code, &code);
     return code;
 }
-uint8_t * huffan_static_decode (uint8_t *dst, uint8_t *src, int s_len)
+uint8_t * deflate (uint8_t *dst, uint8_t *src, int s_len)
 {
     uint32_t stream = 0;
     uint8_t n_bits=0;
-    // nested function
+    // nested functions
     uint32_t stream_read_bit(int n){
         while (n > n_bits) {
             stream |= (uint32_t)(*src++)<<n_bits;
@@ -174,7 +155,7 @@ uint8_t * huffan_static_decode (uint8_t *dst, uint8_t *src, int s_len)
     if (btype==0) {// 3.2.4. Non-compressed blocks (BTYPE=00)
         uint16_t len  = (*(uint16_t *)src); src+=2;// LEN is the number of data bytes in the block.
         uint16_t nlen = (*(uint16_t *)src); src+=2;// NLEN is the one's complement of LEN.
-        //__builtin_memcpy(dst, src, len);
+        __builtin_memcpy(dst, src, len);
         printf("\tNon-compressed block len=%d\n", (int)len);
         src+=len, dst+=len;
     } else
@@ -452,10 +433,7 @@ uint8_t * huffan_static_decode (uint8_t *dst, uint8_t *src, int s_len)
     }
     return dst;
 }
-uint8_t* deflate(uint8_t* dst, uint8_t* src, size_t s_len)
-{
-    return huffan_static_decode(dst, src, s_len);
-}
+
 #if defined(TEST_DEFLATE)
 int main()
 {
