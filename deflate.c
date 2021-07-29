@@ -426,9 +426,9 @@ int main()
         0b11001100, 0b11101000, 0b00111010, 0b00001001, 0b01101101, 0b10001101, 0b01001001, 0b11000101,
         0b01011001, 0b11011111, 0b01110101, 0b11111001, 0b00000110, 0b00000000,
         };
-    int d_len = huffan_static_decode(dst, test, sizeof(test)-1) - dst;
+    int d_len = deflate(dst, test, sizeof(test)-1) - dst;
     printf("dlen=%d: %s\n", d_len, dst);
-    d_len = huffan_static_decode(dst, tst2, sizeof(tst2)) - dst;
+    d_len = deflate(dst, tst2, sizeof(tst2)) - dst;
     printf("dlen=%d: %s\n", d_len, dst);
     return 0;
 }
