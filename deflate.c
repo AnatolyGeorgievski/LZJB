@@ -164,26 +164,6 @@ uint8_t * deflate (uint8_t *dst, uint8_t *src, int s_len)
         uint32_t code, mlen, offset, extra;
         while(src<s_end) {
             // literal/length decode
-            if (0){
-                struct {
-                    uint16_t Len;
-                    int16_t Code;
-                } btree [] = {
-                    {5,0b11000},
-                    {0,0b00110}, {0,0b11001},
-                    {2,0b0000000-256},  {3,0b00110000-0}, {3,0b11000000-280},{4,0b110010000-144},
-                };
-                int n, i=0;
-                code = 0;
-                for (n=0; n<2; n++) {
-                    if (btree[i].Len)
-                        code = huffman_read_bit(code, btree[i].Len);
-                    if (code >= btree[i].Code) i+= (1<<n);
-                    i++;
-                }
-                code = huffman_read_bit(code, btree[i].Len);
-                code -= btree[i].Code;
-            }
             code = huffman_read_bit(0, 5);
             if (code<0b11000) {
                 if (code<0b00110){
@@ -202,8 +182,8 @@ uint8_t * deflate (uint8_t *dst, uint8_t *src, int s_len)
                     code = code - 0b110010000 + 144;
                 }
             }
-
-            if (0) switch (code & 0x1F) {// 5-bit prefix
+#if 0 // Читабельная реализация
+            switch (code & 0x1F) {// 5-bit prefix
             case 0b00000 ... 0b00101:// 256 - 279
                 code = huffman_read_bit(code, 2);
                 code = code - 0b0000000 + 256;
@@ -221,6 +201,7 @@ uint8_t * deflate (uint8_t *dst, uint8_t *src, int s_len)
                 code = code - 0b110010000 + 144;
                 break;
             }
+#endif // 0
             if (code<256){// literal decode
                 *dst++ = code;
                 continue;
@@ -253,7 +234,6 @@ uint8_t * deflate (uint8_t *dst, uint8_t *src, int s_len)
         uint8_t bl_count[MAX_BITS+1]={0};
         int i, n;
 
-//        int max_code=0;
         uint16_t hlit=257+ stream_read_bit(5);//    5 Bits: HLIT,  # of Literal/Length codes - 257(257 - 286)
         uint8_t hdist= 1 + stream_read_bit(5);//    5 Bits: HDIST, # of Distance codes - 1        (1 - 32)
         uint8_t hclen= 4 + stream_read_bit(4);//    4 Bits: HCLEN, # of Code Length codes - 4     (4 - 19)
@@ -314,7 +294,6 @@ uint8_t * deflate (uint8_t *dst, uint8_t *src, int s_len)
             code = huffman_decode(bl_count, max_blen);
             code = alpha[code];
             if (code<16) {
-                //if (code) printf("(%02X:%d) ", alpha_idx, code);
                 prev_code = code;
                 cwl_count[prev_code] ++;
                 cwl_tree_len[alpha_idx++] = prev_code;
@@ -325,7 +304,6 @@ uint8_t * deflate (uint8_t *dst, uint8_t *src, int s_len)
                     cwl_count[prev_code] += n;
                     int count = n;
                     do {
-                        //printf("(%02X:%d) ", alpha_idx, prev_code);
                         cwl_tree_len[alpha_idx++] = prev_code;
                     } while(--count);
                 } else {
@@ -358,10 +336,8 @@ uint8_t * deflate (uint8_t *dst, uint8_t *src, int s_len)
         alpha_idx=0;
         while(alpha_idx<hdist){
             code = huffman_decode(bl_count, max_blen);
-            //printf(" %x:%d", code, alpha[bt_offset + (code - bt_code)]);
             code = alpha[code];
             if (code<16) {
-                //if (code) printf("(%02X:%d) ", alpha_idx, code);
                 prev_code = code;
                 dl_count[prev_code] ++;
                 dl_tree_len[alpha_idx++] = prev_code;
@@ -400,7 +376,6 @@ uint8_t * deflate (uint8_t *dst, uint8_t *src, int s_len)
             uint32_t code = huffman_decode(cwl_count, max_cwl);
             code = cwl_alpha[code];
             if (code<256){
-                //printf("%c", code);
                 *dst++ = code;
             } else {
                 if (code==256)
@@ -420,9 +395,6 @@ uint8_t * deflate (uint8_t *dst, uint8_t *src, int s_len)
                 }
                 {// выделить фукнцию копирования, второй раз
                     uint8_t * s = dst-offset;
-                    if (offset>dst-d_start)
-                        printf("!!! ACTUNG !!!\n");
-//                    printf(" %d:%d-%d", dst-d_start, mlen, offset);
                     int i;
                     for(i=0; i<mlen; i++)
                         *dst++ = *s++;
