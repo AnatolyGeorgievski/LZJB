@@ -3,14 +3,21 @@
     [RFC 1951] DEFLATE Compressed Data Format Specification version 1.3
     Должен попасть в PNG
 
-    Кодирование тесктов: 6 бит на каждый символ 0xxxxx -
+    101 xxxxx 7 - 1
+    0xx x xxxx
  */
 
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-
+// $ gcc   -dM -E -x c /dev/null -std=c11
+#if __BYTE_ORDER__==__ORDER_LITTLE_ENDIAN__
 #define BE16(x) __builtin_bswap16(x)
+#define LE16(x) (x)
+#else
+#define LE16(x) __builtin_bswap16(x)
+#define BE16(x) (x)
+#endif // __BYTE_ORDER__
 /*! При фиксированном методе кодирования используются длины и дистанции,
     к ним дополнительные биты для увеличения длинн */
 static const uint8_t fixed_length_mlen[32] =
@@ -18,7 +25,8 @@ static const uint8_t fixed_length_mlen[32] =
 static const uint8_t fixed_length_extra[32]=
     {0,0,0,0,0,0,0,0,1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4,  4,  5,  5,  5,  5,  0};
 static const uint16_t fixed_distance_offset[32]=
-    {0,1, 2,3, 4,6, 8,12, 16,24, 32,48, 64,96, 128,192, 256,384, 512,768, 1024,1536,
+    {0,1, 2,3, 4,6, 8,12, 16,24, 32,48, 64,96, 128,192,
+    256,384, 512,768, 1024,1536,
     2048,3072, 4096,6144, 8192,12288, 16384,24576};
 static const uint8_t fixed_distance_extra[32]=
     {0,0, 0,0, 1,1, 2,2, 3,3, 4,4, 5,5, 6,6, 7,7, 8,8, 9,9, 10,10, 11,11, 12,12, 13,13};
@@ -55,7 +63,7 @@ static void gen_codes(uint8_t *tree_len, struct _tree_data *tree, int max_code, 
     }
 }
 
-int btree_max_blen(uint8_t *bl_count)
+static int btree_max_blen(uint8_t *bl_count)
 {
     int max_blen=0;
     int i;
@@ -74,7 +82,7 @@ static uint32_t btree_size(uint8_t *bl_count)
     return bt_offset;
 }
 /*! выполняет сортировку массива по коду */
-uint16_t* btree_code_order(uint16_t *alphabet, int alpha_size, uint8_t *bl_count, uint8_t *code_lengths, int cl_count)
+static uint16_t* btree_code_order(uint16_t *alphabet, int alpha_size, uint8_t *bl_count, uint8_t *code_lengths, int cl_count)
 {
     uint32_t bt_offset=0;
     uint16_t bt_offs[MAX_BITS+1];
@@ -153,8 +161,8 @@ uint8_t * deflate (uint8_t *dst, uint8_t *src, int s_len)
     int bfinal= stream_read_bit(1);
     int btype = stream_read_bit(2);
     if (btype==0) {// 3.2.4. Non-compressed blocks (BTYPE=00)
-        uint16_t len  = (*(uint16_t *)src); src+=2;// LEN is the number of data bytes in the block.
-        uint16_t nlen = (*(uint16_t *)src); src+=2;// NLEN is the one's complement of LEN.
+        uint16_t len  = LE16(*(uint16_t *)src); src+=2;// LEN is the number of data bytes in the block.
+        uint16_t nlen = LE16(*(uint16_t *)src); src+=2;// NLEN is the one's complement of LEN.
         __builtin_memcpy(dst, src, len);
         printf("\tNon-compressed block len=%d\n", (int)len);
         src+=len, dst+=len;
@@ -230,7 +238,6 @@ uint8_t * deflate (uint8_t *dst, uint8_t *src, int s_len)
     } else
     if (btype==2) {// 3.2.7. Compression with dynamic Huffman codes (BTYPE=10)
         // read representation of code trees
-        uint8_t * d_start = dst;
         uint8_t bl_count[MAX_BITS+1]={0};
         int i, n;
 
@@ -250,22 +257,8 @@ uint8_t * deflate (uint8_t *dst, uint8_t *src, int s_len)
         printf("hlit %2d, hdist=%2d, hclen=%2d\n", hlit, hdist, hclen);
         for (i=0;i<hclen;) {// i++ внутри функции code_length_repeat
             uint8_t code = stream_read_bit(3);
-            if (code<16) {// Represent code lengths of 0 - 15
-                code_length_repeat(code, 1);
-            } else {
-                if (code==16) {// Copy the previous code length 3 - 6 times.
-                    code = tree_len[cl_order[i-1]];
-                    n = 3 + stream_read_bit(2);
-                } else
-                {
-                    if (code==17)// Repeat a code length of 0 for 3 - 10 times.
-                        n = 3 + stream_read_bit(3);
-                    else // Repeat a code length of 0 for 11 - 138 times
-                        n = 11 + stream_read_bit(7);
-                    code = 0;
-                }
-                code_length_repeat(code, n);
-            }
+            bl_count[code] ++;
+            tree_len[cl_order[i++]] = code;
         }
         // коды по порядку алфавита
         if(1) {

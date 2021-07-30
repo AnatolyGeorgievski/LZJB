@@ -1,5 +1,6 @@
-/*! \brief
-    RFC 2038
+/*! \brief Реализация распаковки графики PNG
+    [RFC 2083] PNG: Portable Network Graphics, March 1997
+    https://datatracker.ietf.org/doc/html/rfc2083
 */
 #include <stdint.h>
 #include <stdio.h>
@@ -18,23 +19,44 @@ uint32_t CRC32B_update(uint32_t crc, unsigned char val){
 	return crc;
 }
 
-#define ADLER_PRIME 65521
+#define ADLER_PRIME 65521// (1<<16)-(1<<4)+(1)
 #define ADLER_MASK 0xFFFFUL;
 /*! обновление контрольной суммы ADLER32. Начальное значение должно быть 0x1.
     Алгоритм используется в графическом формате PNG.
     */
-uint32_t ADLER32_update(uint32_t adler, void *p, int len){
+static uint32_t ADLER32_update_(uint32_t adler, uint8_t *p, size_t len){
 	const uint32_t poly = ADLER_PRIME;
 	uint32_t s1 = (adler      ) & ADLER_MASK;
 	uint32_t s2 = (adler >> 16) & ADLER_MASK;
-	unsigned char * buf = p; --buf;
 	if (len) do{
-		s1 = (s1 + *++buf); // префиксная команда ++ экономит одну инструкцию в цикле
+		s1 += *p++;
 		if (s1 >= poly) s1 -= poly;
 		s2 += s1;
 		if (s2 >= poly) s2 -= poly;
 	} while (--len);
 	return (s2<<16) + s1;
+}
+#define mod65521(x) ((x) - 0xFFF1*(unsigned long)(((x)*0x80078071ULL)>>47))
+/*! Евгенская версия алгоритма, в цикле операций меньше.
+*/
+uint32_t ADLER32_update(unsigned long adler, uint8_t *p, size_t len)
+{
+    const size_t Nmax = 5552;// Евгенская магия
+	unsigned long  s1 = (adler      ) & ADLER_MASK;
+	unsigned long  s2 = (adler >> 16) & ADLER_MASK;
+    while (len)
+    {
+        size_t n = len > Nmax ? Nmax : len;
+        len -= n;
+        do {
+            s1 += *p++;// s1 + p0 + p1 + p2 + p3 ... MAX(s1) = 0xFFF0 + 0xFF*n
+            s2 += s1;// s2 + s1*n + p0*(n) + p1*(n-1) ... MAX(s2) = (n+1)*(0xFFF0 + 0xFF*n/2)
+        }while (--n);
+
+        s1 = mod65521(s1);
+        s2 = mod65521(s2);
+    }
+    return (s2 << 16) | s1;
 }
 static uint32_t crc_from_block(uint8_t *src, size_t len)
 {
@@ -96,8 +118,9 @@ int png_to_image(uint8_t *src, size_t s_len)
 
             } else {
                 int d_len = deflate(dst, cdata+2, length-6)-dst;
+                printf("\ncompression =%1.2f%%\n", (float)(length-6)*100.f/(d_len));
                 if(ADLER32_update(1, dst, d_len)==BE32(*(uint32_t *)(cdata+length-4)))
-                    printf("\nADLER32 Check sum ..ok\n");
+                    printf("ADLER32 Check sum ..ok\n");
             }
         } else
         if (strncasecmp(ctype,"iend", 4)==0) {
@@ -126,7 +149,7 @@ static int _get_contents(char* filename, char** contents, size_t *length, void* 
 #if defined(TEST_PNG)
 int main()
 {
-    char* filename = "test4.png";
+    char* filename = "test1.png";
     uint8_t *contents=NULL;
     size_t length=0;
     _get_contents(filename, (char**)&contents, &length, NULL);
