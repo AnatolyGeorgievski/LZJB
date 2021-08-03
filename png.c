@@ -6,21 +6,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/stat.h>
-static const uint32_t CRC32B_Lookup4[16]={
-0x00000000, 0x1DB71064, 0x3B6E20C8, 0x26D930AC,
-0x76DC4190, 0x6B6B51F4, 0x4DB26158, 0x5005713C,
-0xEDB88320, 0xF00F9344, 0xD6D6A3E8, 0xCB61B38C,
-0x9B64C2B0, 0x86D3D2D4, 0xA00AE278, 0xBDBDF21C
-};
-uint32_t CRC32B_update(uint32_t crc, unsigned char val){
-	crc^= val;
-	crc = (crc>>4) ^ CRC32B_Lookup4[crc & 0xF];
-	crc = (crc>>4) ^ CRC32B_Lookup4[crc & 0xF];
-	return crc;
-}
 
 #define ADLER_PRIME 65521// (1<<16)-(1<<4)+(1)
 #define ADLER_MASK 0xFFFFUL;
+#if 0
 /*! обновление контрольной суммы ADLER32. Начальное значение должно быть 0x1.
     Алгоритм используется в графическом формате PNG.
     */
@@ -36,10 +25,11 @@ static uint32_t ADLER32_update_(uint32_t adler, uint8_t *p, size_t len){
 	} while (--len);
 	return (s2<<16) + s1;
 }
+#endif // 0
 #define mod65521(x) ((x) - 0xFFF1*(unsigned long)(((x)*0x80078071ULL)>>47))
 /*! Евгенская версия алгоритма, в цикле операций меньше.
 */
-uint32_t ADLER32_update(unsigned long adler, uint8_t *p, size_t len)
+static uint32_t ADLER32_update(unsigned long adler, uint8_t *p, size_t len)
 {
     const size_t Nmax = 5552;// Евгенская магия
 	unsigned long  s1 = (adler      ) & ADLER_MASK;
@@ -58,14 +48,7 @@ uint32_t ADLER32_update(unsigned long adler, uint8_t *p, size_t len)
     }
     return (s2 << 16) | s1;
 }
-static uint32_t crc_from_block(uint8_t *src, size_t len)
-{
-    int i;
-    uint32_t crc = ~0UL;
-    for(i=0; i<len; i++)
-        crc = CRC32B_update(crc, src[i]);
-    return ~crc;
-}
+
 #define BE32(x) __builtin_bswap32(x)
 static const uint8_t magic[] = {137, 80, 78, 71, 13, 10, 26, 10};
 struct _PNG_Hdr {
@@ -99,7 +82,7 @@ int png_to_image(uint8_t *src, size_t s_len)
         uint8_t *cdata  = src; src+=length;
         if (src>s_end) break;
         uint32_t crc    = BE32(*(uint32_t *)(src)); src+=4;
-        if (crc != crc_from_block(cdata-4, length+4)) return -1;
+        if (crc != crc32_from_block(cdata-4, length+4)) return -1;
         if (1) printf ("%-.*s crc=%08X  len=%d\n", 4, ctype, crc, length);
         if (strncasecmp(ctype,"ihdr", 4)==0) {
             hdr = (void*)cdata;
@@ -127,7 +110,6 @@ int png_to_image(uint8_t *src, size_t s_len)
             break;
         }
     }
-    printf("=done\n");
     return 0;
 }
 
@@ -149,7 +131,7 @@ static int _get_contents(char* filename, char** contents, size_t *length, void* 
 #if defined(TEST_PNG)
 int main()
 {
-    char* filename = "test1.png";
+    char* filename = "test.png";
     uint8_t *contents=NULL;
     size_t length=0;
     _get_contents(filename, (char**)&contents, &length, NULL);

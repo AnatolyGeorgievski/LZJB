@@ -23,7 +23,10 @@ https://www.kernel.org/doc/Documentation/lzo.txt
            distance = (H << 3) + D + 1
  */
 #include <stdint.h>
+//#include <stdlib.h>// qsort
 #include <stdio.h>
+
+extern float huffman_estimate(const uint8_t *code_lengths, const uint16_t *weights, int cl_len);
 
 //#define	MATCH_BITS	6
 #define	MATCH_MIN	3
@@ -145,6 +148,26 @@ static uint16_t _hashtable_next(_Hash_t *htable, uint16_t ref)
     uint16_t *chain = htable->bucket + htable->nbucket;
     return chain[ref & HT_MASK];
 }
+
+#include <intrin.h>
+struct _stream {
+    uint8_t copymask;
+    uint8_t* stream;
+    uint8_t* dst;
+};
+struct _stream stream_set_bits(struct _stream s, uint8_t bits) {
+    //if (__builtin_add_overflow((s.stream<<1), bits&1, &s.stream))
+    *s.stream ^= bits!=0? s.copymask: 0;
+    //if (_addcarry_u64(bit, s.stream, s.stream, &s.stream))
+    if ((s.copymask<<=1)==0)
+    {
+        s.stream = s.dst; s.dst+=sizeof(*s.stream);
+        s.copymask = 1;
+        *s.stream=0;
+    }
+    return s;
+}
+
 /*!
 Разработка алгоритма потокового сжатия данных
 1. Форматы кодирования. Битовые последовательности
@@ -251,6 +274,7 @@ struct _Smap {
     uint32_t mlen:11;// длина кода
     uint32_t nlit:9;// длина литерала
 };
+/*! Алгоритм сжатия в два прохода. На первом составляет таблицы длин. */
 struct _Smap * lz1_compress_(struct _Smap *map, uint8_t *src, size_t s_len)
 {
 	uint8_t* s_end  =src+s_len;
@@ -322,14 +346,17 @@ struct _Smap * lz1_compress_(struct _Smap *map, uint8_t *src, size_t s_len)
 }
 uint8_t* lz1_encode(uint8_t *dst, uint8_t *src, struct _Smap *map, int map_len)
 {
-    uint8_t copymask=0;
-    uint8_t *copy_map;
+    uint8_t dummy;
+    uint8_t *copy_map= &dummy;
+    register uint8_t copymask=0;
+    register uint32_t stream=0;
     // nested
     uint8_t _copymask_rotate(uint8_t copymask) {
         if((copymask<<=1)==0) {
             copymask = 1;
+            *copy_map = stream;
             copy_map = dst++;
-            *copy_map = 0;
+            stream >>=8;
         }
         return copymask;
     }
@@ -345,12 +372,12 @@ uint8_t* lz1_encode(uint8_t *dst, uint8_t *src, struct _Smap *map, int map_len)
             if (map->mlen==0) break;
         }
         copymask = _copymask_rotate(copymask);
-        *copy_map |= copymask;
+        stream |= copymask;
         copymask = _copymask_rotate(copymask);
         uint32_t mlen = map->mlen;
         uint32_t moffset = map->moffset;// единицу вычли уже чтобы помещалось в 11 бит.
         if(mlen>=2 && mlen<(1<<(8-LZ2_DEPTH))+2 && moffset<(1<<LZ2_DEPTH)){// 1 байт на mlen<6
-            *copy_map |= copymask;
+            stream |= copymask;
             // формат кодирования mlen(2) | offset(6)
             *dst++ = ((mlen-2)<<LZ2_DEPTH) | (moffset);
 		} else
@@ -368,17 +395,327 @@ uint8_t* lz1_encode(uint8_t *dst, uint8_t *src, struct _Smap *map, int map_len)
 		src+=mlen;
 		map++;
     }
+    *copy_map = stream;
     return dst;
 }
+
+static uint32_t btree_size(uint8_t *bl_count, int max_bl)
+{
+    uint32_t bt_size=0;
+    int i;
+    for(i = 1; i <= max_bl; i++) {
+        bt_size += bl_count[i];
+    }
+    return bt_size;
+}
+
+int quick_count=0;
+int quick_depth=0;
+// Сортировка Шелла (англ. Shell sort) — алгоритм сортировки, являющийся усовершенствованным вариантом сортировки вставками.
+static
+void shell_sort_0(uint8_t *a, uint16_t * cl_count, int nmemb)//size_t nmemb, size_t size, int (*compar)(const void *, const void *))
+{
+    int i,j,s;
+    for(s=1/*nmemb/2 */; s>0; s/=2){
+        for(i=0; i<nmemb; i++){
+            uint16_t temp = cl_count[a[i]];
+            for(j=i+s; j<nmemb; j+=s){
+                //if(cl_count[*pl] > temp || (cl_count[*pl] == temp && pl[0]<pl[1])
+                if(cl_count[a[j]] > cl_count[a[i]] ||(cl_count[a[j]] == cl_count[a[i]] && a[j]<a[i])){//array[i] > array[j]){
+                    uint8_t t= a[j];
+                    a[j] = a[i];
+                    a[i] = t;
+                }
+                quick_depth++;
+            }
+        }
+    }
+}
+//void __mask_memmove (void* d, void* s, int len) __attribute__((__target__("avx512vl","avx512bw")));
+static
+void __mask_memcopy (uint8_t* d, uint8_t* s, size_t len) {
+#if !defined(__AVX512F__)
+    int i;
+    for(i=0;i<len;i++)
+        d[i] = s[i];//*(dst-offset+i);
+#else // 0
+#endif
+}
+static
+void __mask_memmove (uint8_t* d, uint8_t* s, size_t len) {
+#if !defined(__AVX512F__)
+    s+=len, d+=len;
+    do{
+        *(--d) = *(--s);//*(dst-offset+i);
+    } while(--len);
+//    __builtin_memmove(d,s,len);
+#else // 0
+//    if (d==s) return;
+    if (0 && d<s) {
+        int i, blocks = len>>6;
+        for(i=0; i<blocks; i++){
+            __m512i v = _mm512_loadu_si512(s);
+            _mm512_storeu_si512(d, v);
+            s+=64, d+=64;
+        }
+        if (len&63){
+            __mmask64 mask = ~0ULL>>((-len)&63);
+            __m512i v = _mm512_maskz_loadu_epi8(mask, s);
+            _mm512_mask_storeu_epi8(d, mask, v);
+        }
+    } else {
+/*        int i, blocks = len>>6;
+        s+=len, d+=len;
+        for(i=0; i<blocks; i++){
+            s-=64, d-=64;
+            __m512i v = _mm512_loadu_si512(s);
+            _mm512_storeu_si512(d, v);
+        }*/
+        //if (len&63)
+        {
+            //s-=len&63, d-=len&63;
+            __mmask64 mask = ~0ULL>>((-len)&63);
+            __m512i v = _mm512_maskz_loadu_epi8(mask, s);
+            _mm512_mask_storeu_epi8(d, mask, v);
+        }
+    }
+#endif // 0
+
+}
+/*! Сортировка Шелла. Без реккурсии, похоже что быстрая.  */
+static void shell_sort_5(uint8_t *a, uint16_t * cl_count, int size)
+{
+  int inc, i, j, seq[2]={1,4,};// хорошие шаги 2^n*3^m
+  int s=1;
+  //s = increment(seq, size);
+    do {
+        inc = seq[s--];
+        for (i = inc; i < size; i++) {
+            uint8_t m = a[i];
+            uint8_t temp = cl_count[m];
+            for (j = i-inc; j >= 0; j -= inc){
+                // условие надо подбирать или менять направление
+                if (cl_count[a[j]] < temp)//cl_count[a[j]] > temp || (cl_count[a[j]] == temp && a[j]<m))
+                    break;
+                a[j+inc] = a[j];
+                quick_count++;
+            }
+            a[j+inc] = m;
+        }
+    }while (s >= 0);
+}
+// https://en.wikipedia.org/wiki/Insertion_sort
+// Хорошо работает на упорядоченном списке. Хорошо - значит мало операций копирования.
+// Этот алгоритм можно применять на спиках
+// Insertion sort для size<=16;
+static
+void shell_sort(uint8_t *a, uint16_t * cl_count, int size)
+{
+    uint8_t *pm, *pl;
+    const int inc=1;
+    for (pm = a + inc; pm < a + size; pm ++){
+        uint16_t m = pm[0];
+        uint16_t temp = cl_count[pm[0]];
+        for (pl = pm-inc; pl >= a; pl-=inc){
+            if (cl_count[*pl] > temp || (cl_count[*pl] == temp && pl[0]<m))
+                break;
+        }
+        if(pm>pl+inc){
+            quick_count++;
+            __mask_memmove(pl+inc+1, pl+inc, pm-(pl+inc));
+            pl[inc] = m;
+        }
+    }
+}
+
+static
+void quick_sort(uint8_t* array, uint16_t * cl_count, int l, int r)
+{
+    quick_depth++;
+    int m = l;
+    int i;
+    for (i = l; i <= r; i++) {
+        if (cl_count[array[i]] >= cl_count[array[r]]){//mas[i] <= mas[r] )
+            uint8_t t= array[m];
+            array[m] = array[i];
+            array[i] = t;
+            quick_count++;
+            m++;
+        }
+    }
+    if (l < m-2) quick_sort(array,cl_count, l,m-2);
+    if (m < r  ) quick_sort(array,cl_count, m,r);
+}
+/* Этот вариант для коротких кодов годится. Для маленькх MAX_VALUE
+
+    void counting_sort(vector<int> &mas) {
+      vector<int> amount(MAX_VALUE,0);
+      for (int i=0;i<mas.size();i++)
+        amount[mas[i]]++;
+      int pos = -1;
+      for (int i=0;i<MAX_VALUE;i++)
+        for (int j=0;j<amount[i];j++)
+          mas[++pos] = i;
+    }
+*/
+
+
+/*! \brief строит гистограмму */
+void lz1_hist(struct _Smap *map, int map_len)
+{
+    uint16_t ml_count[LZ1_DEPTH+1]={0};// распределение длин
+    uint16_t dl_count[LZ1_DEPTH+1]={0};// распределение дистанций
+    uint16_t cl_count[LZ1_DEPTH+1]={0};// распределение кодов
+    int ml_max=0, dl_max=0, cl_max=0;
+    int ml_len=0, dl_len=0, cl_len=0;
+    int i;
+    for(i=0;i<map_len; i++){
+        if (map[i].nlit>0) {
+            int cl = 32-__builtin_clz(map[i].nlit);
+            if (cl_max< cl) cl_max = cl;
+            cl_count[cl]++;
+            ml_count[0]+=map[i].nlit;
+        }
+        if (map[i].mlen>0) {
+            int ml = 32-__builtin_clz(map[i].mlen-1);
+            if (ml_max< ml) ml_max = ml;
+            ml_count[ml]++;
+            //if (ml)
+            {
+                int dl = map[i].moffset==0?0:32-__builtin_clz(map[i].moffset);
+                if (dl_max< dl) dl_max = dl;
+                dl_count[dl]++;
+            }
+        }
+    }
+    printf("max: %3d |%3d |%3d\n",ml_max, dl_max, cl_max);
+    printf("bits|mlen|dist|nlit\n");
+    for(i=0;(i<=ml_max || i<=dl_max || i<=cl_max) && i<LZ1_DEPTH+1; i++){
+        printf("%3d |%3d |%3d |%3d\n", i, ml_count[i], dl_count[i], cl_count[i]);
+    }
+    //alpha_size = nz_count(ml_count, ml_max);// число не нулевых элементов
+    for (i=0; i<=ml_max;i++){// вычисляет длину (число символов алфавита)
+        if (ml_count[i]>0) ml_len++;
+    }
+    uint8_t ml_alpha[ml_len+1];
+    uint8_t*a = ml_alpha;
+    for (i=0; i<=ml_max;i++){// упорядочено по алфавиту
+         if(ml_count[i]>0) *a++=i;
+    }
+    // упорядочить по частоте использования
+    shell_sort(ml_alpha, ml_count, ml_len);
+    //quick_sort(ml_alpha, ml_count, 0, ml_len-1);
+    if (1){
+        uint16_t weights[ml_len];
+        printf("mlen in order:");
+        for(i=0; i<ml_len;i++){
+            printf(" %d", ml_alpha[i]);
+            weights[i] = ml_count[ml_alpha[i]];
+        }
+        printf(" (%d,%d)\n", quick_count,quick_depth);
+        quick_count=quick_depth=0;
+        uint8_t ml_code_lengths[ml_len];//
+        extern void huffman_tree(uint8_t *code_lengths, const uint16_t *weights, int cl_len);
+        huffman_tree(ml_code_lengths, weights, ml_len);
+        float ratio =
+        huffman_estimate(ml_code_lengths, weights, ml_len);
+        printf("mlen lengths :");
+        for(i=0; i<ml_len;i++){
+            printf(" %d(%d)", ml_code_lengths[i], weights[i]);
+//            weights[i] = ml_count[ml_alpha[i]];
+        }
+        printf(" ratio=%1.2f%%\n", ratio/3);
+    }
+
+    for (i=0; i<=dl_max;i++){
+        if (dl_count[i]>0) dl_len++;
+    }
+    uint8_t dl_alpha[dl_len];
+    a = dl_alpha;
+    for (i=0; i<=dl_max;i++){// упорядочено по алфавиту
+         if(dl_count[i]>0) *a++=i;
+    }
+    shell_sort(dl_alpha, dl_count, dl_len);
+    //quick_sort(dl_alpha, dl_count, 0, dl_len-1);
+
+    if (1){
+        printf("dist in order:");
+        for(i=0; i<dl_len;i++)
+            printf(" %d", dl_alpha[i]);
+        printf(" (%d,%d)\n", quick_count,quick_depth);
+        quick_count=quick_depth=0;
+
+        printf("freq in order:");
+        for(i=0; i<dl_len;i++)
+            printf(" %d", dl_count[dl_alpha[i]]);
+        printf("\n");
+    }
+
+    for (i=0; i<=cl_max;i++){
+        if (cl_count[i]>0) cl_len++;
+    }
+    uint8_t cl_alpha[cl_len];
+    a = cl_alpha;
+    for (i=0; i<=cl_max;i++){// упорядочено по алфавиту
+        if(cl_count[i]>0) *a++=i;
+    }
+    shell_sort(cl_alpha, cl_count, cl_len);
+    //quick_sort(cl_alpha, cl_count, 0, cl_len-1);
+    if (1){// длина литерала
+        printf("nlit in order:");
+        for(i=0; i<cl_len;i++)
+            printf(" %d", cl_alpha[i]);
+        printf(" (%d,%d)\n", quick_count,quick_depth);
+        quick_count=quick_depth=0;
+    }
+
+
+}
+extern uint8_t* huffman_fixed_encode(uint8_t *dst, uint8_t *src, struct _Smap *map, int map_len);
+
 uint8_t* lz1_compress_1(uint8_t *dst, uint8_t *src, size_t s_len)
 {
     struct _Smap map[4096];
     int m_count = lz1_compress_(map, src, s_len) - map;
-    dst = lz1_encode(dst, src, map, m_count);
+    lz1_hist(map, m_count);
+    // выбор стратегии на базе гистограммы
+    uint8_t buf[4096];
+    int h_len = huffman_fixed_encode(buf, src, map, m_count)-buf;
+    int d_len = lz1_encode(dst, src, map, m_count)-dst;
+    printf("Huffman fixed size=%1.2f%% / LZJB2=%1.2f%%\n",
+           (float)h_len*100.f/s_len, (float)d_len*100.f/s_len);
 
-    return dst;
+    return dst+d_len;
 }
-
+// длины последовательностей обычно маленькие, этот вариант вероятно оптимальный
+static inline void _memmove_x64(uint8_t* dst, uint8_t* s, size_t mlen)
+{
+    int i;
+    if(0)
+    if (dst-s>=8){// перекрытие
+        for(i=0; i<(mlen>>3); i++) {
+            *(uint64_t*)dst = *(uint64_t*)s;
+            dst+=8, s+=8;
+        }
+        mlen&=7;
+    }
+    for(i=0; i<(mlen); i++)
+        *dst++ = *s++;
+}
+// длины последовательностей обычно маленькие, этот вариант вероятно оптимальный
+static inline void _memcpy_x64(uint8_t* dst, uint8_t* s, size_t mlen)
+{
+    int i;
+    if(1) {
+    for(i=0; i<(mlen>>3); i++) {
+        *(uint64_t*)dst = *(uint64_t*)s;
+        dst+=8, s+=8;
+    }
+    mlen&=7;
+    }
+    for(i=0; i<(mlen); i++)
+        *dst++ = *s++;
+}
 uint8_t* lz1_decompress(uint8_t *dst, uint8_t *src, size_t s_len)
 {
     uint32_t mlen, offset;
@@ -386,8 +723,18 @@ uint8_t* lz1_decompress(uint8_t *dst, uint8_t *src, size_t s_len)
     uint8_t*  s_dst = dst;
     uint8_t*  s_end = src+ s_len;
     uint8_t copymask=0;
-    uint8_t copy_map;
-    int _copymask_bit_test(){
+    int bit_offset=8;
+    uint32_t copy_map;
+    int stream_read_bits(int n){
+
+        return copy_map & ((1U<<(n))-1);
+    }
+    int stream_bit_test(){
+        if (bit_offset == 8) {
+            bit_offset -= 8;
+            copy_map = *src++;
+        }
+        return copy_map & (1U<<(bit_offset++));
         if((copymask<<=1)==0) {
             copymask = 1;
             copy_map = *src++;
@@ -395,8 +742,8 @@ uint8_t* lz1_decompress(uint8_t *dst, uint8_t *src, size_t s_len)
         return copy_map & copymask;
     }
     while(src<s_end) {
-        if (_copymask_bit_test()) {// используется кодирование
-            if (_copymask_bit_test()) {// формат кодирования 1 байт + 2бита
+        if (stream_bit_test()) {// используется кодирование
+            if (stream_bit_test()) {// формат кодирования 1 байт + 2бита
                 uint32_t  data = *src++;
                 offset = (data&((1<<LZ2_DEPTH)-1)) + 1;
                 mlen   = (data>>LZ2_DEPTH)+2;// 2-5 байт
@@ -404,26 +751,23 @@ uint8_t* lz1_decompress(uint8_t *dst, uint8_t *src, size_t s_len)
                 uint32_t data = *(uint16_t* )src; src+=2;
                 offset = (data&((1<<LZ1_DEPTH)-1)) + 1;
                 mlen   = (data>>LZ1_DEPTH)+3;
+                    //printf("&(%d:%d)", offset, mlen);
                 if (mlen==LZ1_LEN_EXT) {
                     mlen += *src++;
                 }
             }
-            //printf(":%d-%d:'%-.*s'\n", mlen, offset, mlen, dst-offset);
-            if(0) printf("%s:%d-%d-%3d:%d\n", (copy_map & copymask)?"F1":"F2", nlit, mlen, offset,
-                         32 - __builtin_clz(dst-s_dst));
-            nlit=0;
-            uint8_t* s = dst-offset;
-            int i;
-            for(i=0;i<mlen;i++)
-                dst[i] = s[i];//*(dst-offset+i);
-            dst+= mlen;
+            if (1 && mlen>0)
+            {
+                _memmove_x64(dst, dst-offset, mlen);
+                dst += mlen;
+            } else {
+                _memcpy_x64(dst, src, offset);
+                src += offset, dst+=offset;
+            }
         } else {// literal
-            nlit++;
             *dst++=*src++;
         }
     }
-    if (0&& nlit) printf("F0:%d:\n", nlit);
-//    printf ("LZ4 toks =%d: size=%d ratio=%1.2f\n", (int)lz4_nlit, (int)(lz4_tokens+lz4_nlit+lz4_rle), (float)(lz4_tokens+lz4_nlit+lz4_rle)/(dst-s_dst));
     return dst;
 }
 

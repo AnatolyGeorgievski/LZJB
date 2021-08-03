@@ -1,0 +1,138 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>
+<CodeBlocks_project_file>
+	<FileVersion major="1" minor="6" />
+	<Project>
+		<Option title="lzjb" />
+		<Option pch_mode="2" />
+		<Option compiler="gcc" />
+		<Build>
+			<Target title="Debug">
+				<Option output="bin/Debug/lzjb" prefix_auto="1" extension_auto="1" />
+				<Option object_output="obj/Debug/" />
+				<Option type="1" />
+				<Option compiler="gcc" />
+				<Option parameters="bin\Debug\lzjb.exe  test.utf8.txt test.svg test.b64 test.bin lzjb.c lzjb.depend  " />
+				<Compiler>
+					<Add option="-g" />
+				</Compiler>
+			</Target>
+			<Target title="Release">
+				<Option output="bin/Release/lzjb" prefix_auto="1" extension_auto="1" />
+				<Option object_output="obj/Release/" />
+				<Option type="1" />
+				<Option compiler="gcc" />
+				<Compiler>
+					<Add option="-O2" />
+				</Compiler>
+				<Linker>
+					<Add option="-s" />
+				</Linker>
+			</Target>
+			<Target title="PNG">
+				<Option output="bin/Debug/lzjb" prefix_auto="1" extension_auto="1" />
+				<Option object_output="obj/Debug/" />
+				<Option type="1" />
+				<Option compiler="gcc" />
+				<Option parameters="test.svg test.b64 test.utf8.txt test.bin bin\Debug\lzjb.exe  lzjb.c lzjb.depend  " />
+				<Compiler>
+					<Add option="-g" />
+					<Add option="-DTEST_PNG" />
+				</Compiler>
+			</Target>
+			<Target title="Deflate">
+				<Option output="bin/Debug/lzjb" prefix_auto="1" extension_auto="1" />
+				<Option object_output="obj/Debug/" />
+				<Option type="1" />
+				<Option compiler="gcc" />
+				<Option parameters="test.svg test.b64 test.utf8.txt test.bin bin\Debug\lzjb.exe  lzjb.c lzjb.depend  " />
+				<Compiler>
+					<Add option="-g" />
+					<Add option="-DTEST_DEFLATE" />
+				</Compiler>
+			</Target>
+			<Target title="GZip">
+				<Option output="bin/Debug/lzjb" prefix_auto="1" extension_auto="1" />
+				<Option object_output="obj/Debug/" />
+				<Option type="1" />
+				<Option compiler="gcc" />
+				<Option parameters="test.svg test.b64 test.utf8.txt test.bin bin\Debug\lzjb.exe  lzjb.c lzjb.depend  " />
+				<Compiler>
+					<Add option="-g" />
+					<Add option="-march=native" />
+					<Add option="-DTEST_GZIP" />
+				</Compiler>
+				<Linker>
+					<Add option="-O3" />
+				</Linker>
+			</Target>
+			<Target title="Huffman">
+				<Option output="bin/Debug/lzjb" prefix_auto="1" extension_auto="1" />
+				<Option object_output="obj/Debug/" />
+				<Option type="1" />
+				<Option compiler="gcc" />
+				<Option parameters="test.svg test.b64 test.utf8.txt test.bin bin\Debug\lzjb.exe  lzjb.c lzjb.depend  " />
+				<Compiler>
+					<Add option="-g" />
+					<Add option="-march=native" />
+					<Add option="-DTEST_HUFFMAN" />
+				</Compiler>
+			</Target>
+		</Build>
+		<Compiler>
+			<Add option="-Wall" />
+		</Compiler>
+		<Unit filename="crc.c">
+			<Option compilerVar="CC" />
+		</Unit>
+		<Unit filename="deflate.c">
+			<Option compilerVar="CC" />
+			<Option target="Debug" />
+			<Option target="Release" />
+			<Option target="PNG" />
+			<Option target="Deflate" />
+			<Option target="GZip" />
+		</Unit>
+		<Unit filename="gzip.c">
+			<Option compilerVar="CC" />
+			<Option target="Release" />
+			<Option target="GZip" />
+		</Unit>
+		<Unit filename="huffman.c">
+			<Option compilerVar="CC" />
+		</Unit>
+		<Unit filename="huffman.h" />
+		<Unit filename="lz4.c">
+			<Option compilerVar="CC" />
+			<Option target="Debug" />
+			<Option target="Release" />
+		</Unit>
+		<Unit filename="lzjb.c">
+			<Option compilerVar="CC" />
+			<Option target="Debug" />
+			<Option target="Release" />
+		</Unit>
+		<Unit filename="lzjb_original.c">
+			<Option compilerVar="CC" />
+			<Option target="Debug" />
+			<Option target="Release" />
+		</Unit>
+		<Unit filename="png.c">
+			<Option compilerVar="CC" />
+			<Option target="Debug" />
+			<Option target="Release" />
+			<Option target="PNG" />
+			<Option target="GZip" />
+		</Unit>
+		<Unit filename="xxh32.c">
+			<Option compilerVar="CC" />
+			<Option target="Debug" />
+			<Option target="Release" />
+		</Unit>
+		<Unit filename="xxh64.c">
+			<Option compilerVar="CC" />
+			<Option target="Debug" />
+			<Option target="Release" />
+		</Unit>
+		<Extensions />
+	</Project>
+</CodeBlocks_project_file>

@@ -86,6 +86,9 @@ uint32_t xxh32_final(HashCtx_t *ctx)
     hash ^= hash >> 16;
     return hash;
 }
+/*! \brief Расчет некриптографического хеш, используется в качестве контрольной суммы
+
+ */
 uint32_t xxh32(uint32_t hash, uint8_t* data, size_t data_len)
 {
     if (data_len>=16){
@@ -93,7 +96,7 @@ uint32_t xxh32(uint32_t hash, uint8_t* data, size_t data_len)
         state+=hash;
         int blocks = data_len>>4;
         int  i;
-        for (i=0; i<blocks; i++) {
+        for (i=0; i<blocks; i++) {// вектор 128 бит
             uint32x4_t block;
             __builtin_memcpy(&block, data, 16); data+=16;
             state = ROTL32(state + block*Prime2, 13) * Prime1;
@@ -121,7 +124,7 @@ uint32_t xxh32(uint32_t hash, uint8_t* data, size_t data_len)
 }
 
 /*
-
+Результат компиляции, в цикле получается такой код, цикл за два такта.
         vmovdqa .LC0(%rip), %xmm0
         vpmulld (%rdx), %xmm0, %xmm0
         vpaddd  (%rcx), %xmm0, %xmm0
