@@ -2,9 +2,11 @@
     Author: Anatoly Georgievskii <anatoly.georgievski@gmail.com>
 */
 /*! \brief алгоритм распаковки Deflate Дифлятор
+    Должен попасть в PNG, GZIP и поставить реккорд по скорости распаковки
 
-    [RFC 1951] DEFLATE Compressed Data Format Specification version 1.3
-    Должен попасть в PNG
+    \see [RFC 1951] DEFLATE Compressed Data Format Specification version 1.3
+
+    \sa ALISTAIR MOFFAT, Huffman Coding, ACM Comput. Surv., Vol. 1, No. 1, Article 1. Publication date: June 2019.
 
     101 xxxxx 7 - 1
     0xx x xxxx
@@ -53,7 +55,7 @@ struct _tree_data {
 /*!
     \sa https://github.com/zlib-ng/zlib-ng/blob/develop/deflate.c
  */
-static void gen_codes(uint8_t *tree_len, struct _tree_data *tree, int max_code, uint8_t *bl_count)
+static void gen_codes(uint8_t *tree_len, uint16_t *codes, int t_len, uint8_t *bl_count)
 {// построение таблицы алфавита из max_code
     uint16_t code = 0;
     uint16_t next_code[MAX_BITS+1];
@@ -66,73 +68,123 @@ static void gen_codes(uint8_t *tree_len, struct _tree_data *tree, int max_code, 
     }
     next_code[i] = code;
 
-    for (i=0; i<=max_code; i++) {
+    for (i=0; i< t_len; i++) {
         int len = tree_len[i];
         if (len != 0) {
                 // tree[n].Code = bi_reverse(next_code[len]++, len);
-            tree[i].Code = next_code[len]++;
+            codes[i] = next_code[len]++;
         }
     }
 }
 
-static int btree_max_blen(uint8_t *bl_count)
+static int btree_min_blen(const uint8_t *bl_count)
 {
-    int max_blen=0;
-    int i;
-    for(i = 1; i <= MAX_BITS; i++) {
-        if (bl_count[i]!=0) max_blen = i;
-    }
-    return max_blen;
+    int i=1;
+    while(bl_count[i]==0) i++;
+/*    for(i = 1; i <= MAX_BITS; i++) {
+        if (bl_count[i]!=0) break;
+    }*/
+    return i;
 }
-static uint32_t btree_size(uint8_t *bl_count, int max_bl)
+/*! возвращает максимальную длину кодов */
+static int btree_max_blen(const uint8_t *bl_count, int min_bl, int max_bl)
+{
+//    int max_blen=min_bl;
+    int i=max_bl;
+    while (bl_count[i]==0) i--;
+/*    for(i = MAX_BITS; i >= 0; --i) {
+        if (bl_count[i]!=0) break;
+    }*/
+    return i;
+}
+/*! возвращает число не нулевых символов */
+static uint32_t btree_size(uint8_t *bl_count, int min_bl, int max_bl)
 {
     uint32_t bt_size=0;
     int i;
-    for(i = 1; i <= max_bl; i++) {
+    for(i = min_bl; i <= max_bl; i++) {
         bt_size += bl_count[i];
     }
     return bt_size;
 }
-/*! выполняет сортировку массива по коду */
-static uint16_t* btree_code_order(uint16_t *alphabet, int alpha_size, uint8_t *bl_count, uint8_t *code_lengths, int cl_count, int max_bl)
+/* Huffman code lookup table entry--this entry is four bytes for machines
+   that have 16-bit pointers (e.g. PC's in the small or medium model).
+   Valid extra bits are 0..13.  e == 15 is EOB (end of block), e == 16
+   means that v is a literal, 16 < e < 32 means that v is a pointer to
+   the next table, which codes e - 16 bits, and lastly e == 99 indicates
+   an unused code.  If a code with e == 99 is looked up, this implies an
+   error in the data. */
+
+typedef struct _btree_codes btree_codes_t;
+struct _btree_codes {
+    int min_dl, max_dl, tabL;
+    uint16_t *first_symbol; // размер таблицы min_dl
+    uint16_t *first_code;   // размер таблицы min_dl
+    uint8_t  *search_start; // где искать коды с данным префиксом, размер таблицы 1<<min_dl
+    uint8_t  *search_end  ; // где искать коды с данным префиксом, размер таблицы 1<<min_dl
+};
+/*! генерирует таблицы неободимые для декодирования */
+//static
+void btree_codes(uint8_t *bl_count, int min_bl,int max_bl,
+                            struct _btree_codes *bt, int tab)
 {
-    uint32_t bt_offset=0;
-    uint16_t bt_offs[max_bl+1];
+    const int L=MAX_BITS;
+    uint32_t bt_code=0, bt_offset=0,code;
+    int t = tab - min_bl;
     int i;
-    for(i = 1; i <= max_bl; i++) {
-        bt_offs[i] = bt_offset;
+    for(i = 0; i <= (max_bl); i++) {
+        bt->first_symbol[i] = bt_offset;// номер символа заданной длины (i)
+        bt->first_code  [i] = bt_code<<(L- min_bl -i); // первый код данной длины (i)
+        uint32_t count = bl_count[i];
+        if (count) {
+            for (code = bt_code<<(t)>>(i); code<=((((bt_code+count)<<(t))-1)>>(i)); code++) {
+                if (bt->search_start[code]==0) {
+                    bt->search_start[code] = i;
+                }
+                bt->search_end[code] = i;
+            }
+        }
+        bt_offset += count;
+        bt_code = (bt_code+count)<<1;// расчитываем коды налету
+    }
+    bt->first_code  [i] = ~0;// не понятно
+/*    for(i = 0; i < (1<<tab); i++) {
+        if (bt->search_start[i]<=tab && bt->search_start[i]==bt->search_end[i])
+            bt->decode_fast[i] = bt->first_symbol[i] + ((code - bt->first_code[i])>>(L-min_bl-bt->search_start[i]));
+        else
+            bt->decode_fast[i] = bt->search_end[i]<<12;
+    }*/
+
+    if (0) {
+        printf("CODES: %d, <%d,%d\n", min_bl, max_bl, t);
+        for(i = 0; i < (1<<tab); i++) {
+            if (bt->search_start[i] != bt->search_end[i])
+            printf("%2d SS:%d SE:%d\n", i, bt->search_start[i]+min_bl, bt->search_end[i]+min_bl);
+        }
+        printf("\n");
+    }
+}
+/*! выполняет сортировку массива по коду */
+static uint16_t* btree_code_order(uint16_t *alphabet, int alpha_size, uint8_t *bl_count, uint8_t *code_lengths, int cl_count, int min_bl, int max_bl)
+{
+    //int min_bl=1;
+    uint32_t bt_offset=0;
+    uint16_t bt_offs[max_bl-min_bl+1];
+    int i;
+    for(i = min_bl; i <= max_bl; i++) {
+        bt_offs[i-min_bl] = bt_offset;
         bt_offset += bl_count[i];
     }
     for (i=0; i<cl_count; i++) {
         int len = code_lengths[i];
         if (len != 0) {
-            alphabet[bt_offs[len]++]=i;
+            alphabet[bt_offs[len-min_bl]++]=i;
         }
     }
     return alphabet;
 }
 
 #include <intrin.h>
-uint8_t huffman_read_test(uint32_t code, long* src, int offset, int n){
-//    code = (code+code) + (src[offset>>3] >> (offset&7))&1;
-    int i;
-    for(i=0;i<n;i++) {
-        code = (code<<1) + _bittest(src, offset++);
-    }
-    return code;
-}
-uint8_t huffman_read_test2(uint32_t code, long* src, int offset){
-    code = (code<<1) | _bittest64 (src, offset);//, code, code, &code);
-    return code;
-}/*
-uint8_t huffman_read_test3(uint32_t code, uint32_t stream, int n){
-    code = (code<<n) | _bzhi_u32(stream, n);
-    return code;
-}*/
-uint8_t huffman_read_test4(uint64_t code, uint64_t stream, int n){
-    code = (code>>n) | (stream<<(64-n));
-    return code;
-}
 inline
 unsigned int __shrd(unsigned int into, unsigned int from, unsigned int c)
 {
@@ -219,18 +271,21 @@ rle_memmove_avx(uint8_t* dst, uint8_t* s, size_t mlen)
     return dst;
 }
 // длины последовательностей обычно маленькие, этот вариант вероятно оптимальный
-static inline uint8_t* rle_memmove_x64(uint8_t* dst, uint8_t* s, size_t mlen)
+static uint8_t*
+__attribute__((optimize("Os","no-tree-loop-distribute-patterns")))
+rle_memmove_x64(uint8_t* dst, uint8_t* s, size_t mlen)
 {
-    int i;
     if (dst-s>=8){// перекрытие
-        for(i=0; i<(mlen>>3); i++) {
+        int blocks = mlen>>3;
+        if (blocks) do {
             *(uint64_t*)dst = *(uint64_t*)s;
             dst+=8, s+=8;
-        }
+        } while(--blocks);
         mlen&=7;
     }
-    for(i=0; i<(mlen); i++)
+    if (mlen) do{
         *dst++ = *s++;
+    } while (--mlen);
     return dst;
 }
 #if 0
@@ -246,21 +301,60 @@ static inline uint8_t* rle_memmove_x64(uint8_t* dst, uint8_t* s, size_t mlen)
 #endif // 0
 
 #define rle_memmove rle_memmove_x64
+static inline uint16_t __attribute__((__target__("avx512bitalg")))
+reverse_16bits(uint64_t stream)
+{
+    __m128i  bits  = _mm_set_epi64x(0x0001020304050607ULL, 0x0001020304050607ULL+0x0808080808080808ULL);
+    __mmask16 mask = _mm_bitshuffle_epi64_mask(_mm_set1_epi64x(stream), bits);
+    return mask;
+}
+
+/* TODO держать вектор reverse_stream 128 бит из, использовать аффинные преобразования */
+// \see https://graphics.stanford.edu/~seander/bithacks.html#BitReverseTable
+const uint8_t BitReverseTable16l[16]={0,8,4,0xC,2,0xA,6,0xE,1,9,5,0xD,3,0xB,7,0xF};
+const uint8_t BitReverseTable16h[16]={0,0x80,0x40,0xC0,0x20,0xA0,0x60,0xE0,0x10,0x90,0x50,0xD0,0x30,0xB0,0x70,0xF0};
+static inline uint8_t revbits_(uint8_t b){
+    return BitReverseTable16l[b>>4] | (BitReverseTable16h[b&0xF]);
+}
+#if defined(__ARM__)
+// \see Arm C Language Extensions Documentation, Release ACLE Q3 2020
+static inline uint8_t revbits_arm(uint8_t b)
+{
+    return __builtin_rbit(b);
+}
+// uint32_t __rbit(uint32_t x);
+#endif // defined
+static inline uint8_t revbits(uint8_t b){
+    // B=1023: 0x80200803 nd=41
+    // b = (b * 0x0202020202ULL & 0x010884422010ULL) % 1023;
+    // x =
+    // b = b - x * 1024 + x;
+    return ((b * 0x80200802ULL) & 0x0884422110ULL) * 0x0101010101ULL >> 32;
+}
+
+
 
 static deflate_t context = {0};
-uint8_t * deflate (uint8_t *dst, uint8_t *src, int s_len, deflate_t* ctx)
+uint8_t * deflate (uint8_t *dst, uint8_t *src, size_t s_len, deflate_t* ctx)
 {
-    if (ctx==NULL) ctx = &context;
+    if (ctx==NULL) {
+        ctx = &context;
+        ctx->n_bits =0;
+    }
     uint32_t stream = ctx->stream;
     uint32_t n_bits = ctx->n_bits;
     // nested functions
-    inline void stream_preload(int n){
-        while (n > n_bits) {
+    inline void     stream_preload (int n){
+        if (n > n_bits) {
             stream |= (uint32_t)(*src++)<<n_bits;
             n_bits += 8;
+            if (n > n_bits) {
+                stream |= (uint32_t)(*src++)<<n_bits;
+                n_bits += 8;
+            }
         }
     }
-    uint32_t stream_read_bit(int n){
+    inline uint32_t stream_read_bit(int n){
         stream_preload(n);
         n_bits -=n;
 
@@ -268,27 +362,83 @@ uint8_t * deflate (uint8_t *dst, uint8_t *src, int s_len, deflate_t* ctx)
         stream>>=n;
         return code;
     }
-    uint32_t huffman_read_bit(uint32_t code, int n){
+   inline uint32_t huffman_read_bit(uint32_t code, int n){
         n_bits -= n;
         do{// это может быть одна инструкция через флаг переноса CF. или SHLD на ARM это может быть RBIT
-            code = (code<<1) | (stream &1);
+            code = (code<<1) + (stream &1);
             stream>>=1;
         } while(--n);
         return code;
     }
-    /* Декодирование с ипсользованием алфавита */
+    /* Декодирование с ипсользованием алфавита
+    ACM Comput. Surv., Vol. 1, No. 1, Article 1. Publication date: June 2019
+
+    identify ℓ such that first_code_l[ℓ] ≤ code < first_code_l[ℓ + 1];
+    set offset ← (code − first_code_l[ℓ]) >> (L − ℓ);
+
+    set s ← first_symbol[ℓ] + offset;
+    set code ← ((code << ℓ) & maskL) + getbits(ℓ);
+    output s;
+
+    set ℓ ← search_start[code >> (L − t)];
+    while code ≥ first_code_l[ℓ + 1] do
+        set ℓ ← ℓ + 1.
+
+    */
+    void *bsearch(const void *key, const void *base, size_t num, size_t size,
+              int (*cmp)(const void *key, const void *))
+    {
+            size_t l = 0, u = num;
+            while (l < u) {
+                    register const size_t mid = (l + u)>>1;
+                    register const char* p = (const char*)base + mid * size;
+                    register int result = cmp(key, p);
+                    if (result < 0)
+                            u = mid;
+                    else if (result > 0)
+                            l = mid + 1;
+                    else
+                            return (void *)p;
+            }
+            return NULL;
+    }
+
+    /*! \brief Декодирование табличный метод */
+    inline uint32_t huffman_decode2(btree_codes_t* bt, int min_dl, int max_dl, int tab)
+    {
+        const int L=MAX_BITS;
+        stream_preload(max_dl);
+        uint16_t code  = ((uint16_t)revbits(stream) <<8)|((uint16_t)revbits(stream>>8));// надо быстро развернуть биты _rbits16
+        int l = bt->search_start[code>> (16-tab)];
+        int u = bt->search_end  [code>> (16-tab)];
+        code>>=(16 - L);
+        uint16_t *fc = &bt->first_code[0];
+        if (l<u) while(code >= fc[l+1]) l++;
+        stream>>=l+min_dl; n_bits-=l+min_dl;
+        return bt->first_symbol[l] + ((code - fc[l])>>(L-(l+min_dl)));
+    }
+    /*! \brief Декодирование
+        \param min_cwl - минимальное число бит,
+     */
     uint32_t huffman_decode(uint8_t* cwl_count, int max_cwl)
     {
         uint32_t bt_code=0, bt_offset=0, code=0;
         stream_preload(max_cwl);
-        int i;
-        for(i=1; i<=max_cwl; i+=1, bt_code <<= 1) {// Алгоритм поиска(cwl_count, max_cwl), заменить на while, убрать проверку
-            code = huffman_read_bit(code, 1);
-            if (cwl_count[i]==0) continue;
-            if (code - bt_code>=0 && code - bt_code < cwl_count[i]) break;
-            bt_code   += cwl_count[i];
-            bt_offset += cwl_count[i];
+        //__asm volatile("# LLVM-MCA-BEGIN decode");
+        int i=1;
+        register long count;// = cwl_count[i];
+        for(;; i+=1, bt_code <<= 1) {// Алгоритм поиска(cwl_count, max_cwl), заменить на while, убрать проверку
+            code = (code<<1) + (stream &1);
+            stream>>=1;
+            count = cwl_count[i];// число кодов с разрядностью (i)
+            if (count==0)  continue;
+            // bt_code - первый символ в кодовой таблице с разрядностью (i)
+            if (count> code - bt_code) break;
+            bt_code   += count;
+            bt_offset += count;
         }
+        //__asm volatile("# LLVM-MCA-END decode");
+        n_bits -= i;
         return bt_offset + (code - bt_code);
     }
 
@@ -305,7 +455,7 @@ uint8_t * deflate (uint8_t *dst, uint8_t *src, int s_len, deflate_t* ctx)
         stream = 0, n_bits=0;
     } else
     if (btype==1) {// 3.2.6. Compression with fixed Huffman codes (BTYPE=01)
-        if(DBG)printf("Compression with fixed Huffman codes\n");
+        if(1)printf("Compression with fixed Huffman codes\n");
         uint32_t code, mlen, offset, extra;
         while(src<s_end) {
             // literal/length decode
@@ -379,7 +529,7 @@ uint8_t * deflate (uint8_t *dst, uint8_t *src, int s_len, deflate_t* ctx)
     if (btype==2) {// 3.2.7. Compression with dynamic Huffman codes (BTYPE=10)
         // read representation of code trees
         uint8_t bl_count[MAX_BITS+1]={0};
-        int i, n;
+        int i;
 
         uint16_t hlit=257+ stream_read_bit(5);//    5 Bits: HLIT,  # of Literal/Length codes - 257(257 - 286)
         uint8_t hdist= 1 + stream_read_bit(5);//    5 Bits: HDIST, # of Distance codes - 1        (1 - 32)
@@ -392,84 +542,116 @@ uint8_t * deflate (uint8_t *dst, uint8_t *src, int s_len, deflate_t* ctx)
             bl_count[code] ++;
             tree_len[cl_order[i]] = code;
         }
+        for (;i<19;i++) {
+            tree_len[cl_order[i]] = 0;
+        }
         // коды по порядку алфавита
         if(DBG) {
-            struct _tree_data tree [20]={0};
-            gen_codes(tree_len, tree, 18, bl_count);
+            uint16_t tree [20]={0};
+            gen_codes(tree_len, tree, 19, bl_count);
             for(i=0; i<19;i++)
-                printf("\t%2d: %2d, %x\n", i, tree_len[i], tree[i].Code);
+                printf("\t%2d: %2d, %x\n", i, tree_len[i], tree[i]);
         }
         // коды по порядку кодирования
-        int max_bl = btree_max_blen(bl_count);
-        uint32_t alpha_size = btree_size(bl_count, max_bl);
+        int min_bl = btree_min_blen(bl_count);
+        int max_bl = btree_max_blen(bl_count, min_bl,7);
+        uint32_t alpha_size = btree_size(bl_count, min_bl, max_bl);
         uint16_t alpha[alpha_size];
-        btree_code_order(alpha, alpha_size, bl_count, tree_len, 19, max_bl);
+        btree_code_order(alpha, alpha_size, bl_count, tree_len, 19, min_bl, max_bl);
         if (DBG) {
             printf("  in order:");
             for(i=0; i<alpha_size;i++)
                 printf(" %d", alpha[i]);
             printf("\n");
         }
-        uint32_t prev_code=0, code;
-        uint8_t cwl_count[MAX_BITS+1]={0};
+        uint8_t cwl_count[MAX_BITS+1];
         uint8_t cwl_tree_len[hlit];
         //__builtin_bzero(cwl_tree_len, hlit);
-        int alpha_idx=0;
-        uint8_t* tree = cwl_tree_len;
-        // cwl_count bl_count, max_bl
-        uint8_t* e_tree = tree+hlit;
+        void huffman_read_alpha(uint8_t* tree, int tlen, uint8_t* tl_count)
+        {
+            __builtin_bzero(tl_count, MAX_BITS+1);
+            uint32_t prev_code=0, code;
+            uint8_t* e_tree = tree+tlen;
+            while(tree<e_tree){
+                code = huffman_decode(bl_count, max_bl);
+                code = alpha[code];
+                if (code<16) {
+                    prev_code = code;
+                    tl_count[prev_code] ++;
+                    *tree++ = prev_code;
+                }
+                else {
+                    int n;
+                    if (code==16) {// Copy the previous code length 3 - 6 times.
+                        n = 3 + stream_read_bit(2);
+                        tl_count[prev_code] += n;
+                    } else {
+                        if (code==17){// Repeat a code length of 0 for 3 - 10 times.
+                            n = 3 + stream_read_bit(3);
+                        } else {// Repeat a code length of 0 for 11 - 138 times
+                            n = 11 + stream_read_bit(7);
+                        }
+                        prev_code = 0;
+                    }
+                    do {
+                        *tree++ = prev_code;
+                    } while(--n);
+                }
+            }
+        }
+        huffman_read_alpha(cwl_tree_len, hlit, cwl_count);
+        if (0) printf("max_bl = %d\n", max_bl);
+                // коды алфавита по порядку кодирования
+        int min_cwl = btree_min_blen(cwl_count);
+        int max_cwl = btree_max_blen(cwl_count,min_cwl,MAX_BITS);
+        uint32_t cwl_size = btree_size(cwl_count, min_cwl, max_cwl);
+        uint16_t cwl_alpha[cwl_size];// содержит симовлы в порядке кодирования
+        btree_code_order(cwl_alpha, cwl_size, cwl_count, cwl_tree_len, hlit, min_cwl, max_cwl);
+#if 1
+        uint16_t cwl_first_symbol[max_cwl - min_cwl+1];
+        uint16_t cwl_first_code  [max_cwl - min_cwl+2];
+        //const int cwl_T = 8;
+        int tab_cwl = 8;
+        // tab_cwl = btree_bound(8, min_cwl, max_cwl);
+        if (tab_cwl< min_cwl) tab_cwl = min_cwl;
+        else if (tab_cwl> max_cwl) tab_cwl = max_cwl;
+        uint8_t  cwl_search_start[1<<tab_cwl];
+        uint8_t  cwl_search_end  [1<<tab_cwl];
+        uint8_t  cwl_decode_fast [1<<tab_cwl];
+        __builtin_bzero(cwl_search_start, 1<<tab_cwl);
+        //__builtin_bzero(cwl_search_end,   1<<tab_cwl);
+        btree_codes_t cwl_btree = {.search_start = cwl_search_start,.search_end = cwl_search_end, .tabL = 0,
+            .first_symbol = cwl_first_symbol, .first_code = cwl_first_code};
+        btree_codes(cwl_count+min_cwl, min_cwl, max_cwl-min_cwl, &cwl_btree, tab_cwl);
+#endif // 0
+        if (0){
+            printf("\n  in order:");
+            for(i=0; i<cwl_size;i++)
+                printf(" %X", cwl_alpha[i]);
+            printf("\n");
+            uint16_t cwl_codes[hlit+1];
+            __builtin_bzero(cwl_codes, hlit);
+            gen_codes(cwl_tree_len, cwl_codes, hlit, cwl_count);
+            for(i=0; i<=hlit;i++){
+                printf("\t%2d: %2d, %x\n", i, cwl_tree_len[i], cwl_codes[i]);
+            }
+        }
+
+// коды для алфавита смещений
+        uint8_t dl_count[MAX_BITS+1]={0};
+        uint8_t dl_tree_len[hdist];
+        //__builtin_bzero(dl_tree_len, hdist);
+        huffman_read_alpha(dl_tree_len, hdist, dl_count);
+#if 0
+        tree = dl_tree_len;
+        e_tree = tree+hdist;
         while(tree<e_tree){
             code = huffman_decode(bl_count, max_bl);
             code = alpha[code];
             if (code<16) {
                 prev_code = code;
-                cwl_count[prev_code] ++;
-                *tree++ = prev_code;
-            }
-            else {
-                int n;
-                if (code==16) {// Copy the previous code length 3 - 6 times.
-                    n = 3 + stream_read_bit(2);
-                    cwl_count[prev_code] += n;
-                } else {
-                    if (code==17){// Repeat a code length of 0 for 3 - 10 times.
-                        n = 3 + stream_read_bit(3);
-                    } else {// Repeat a code length of 0 for 11 - 138 times
-                        n = 11 + stream_read_bit(7);
-                    }
-                    prev_code = 0;
-                }
-                int count = n;
-                do {
-                    *tree++ = prev_code;
-                } while(--count);
-            }
-        }
-                // коды алфавита по порядку кодирования
-        int max_cwl = btree_max_blen(cwl_count);
-        uint32_t cwl_size = btree_size(cwl_count, max_cwl);
-        uint16_t cwl_alpha[cwl_size];// содержит симовлы в порядке кодирования
-        btree_code_order(cwl_alpha, cwl_size, cwl_count, cwl_tree_len, hlit, max_cwl);
-        if (DBG){
-            printf("\n  in order:");
-            for(i=0; i<cwl_size;i++)
-                printf(" %X", cwl_alpha[i]);
-            printf("\n");
-        }
-
-// коды для алфавита смещений
-        prev_code=0;
-        uint8_t dl_count[MAX_BITS+1]={0};
-        uint8_t dl_tree_len[hdist];
-        //__builtin_bzero(dl_tree_len, hdist);
-        alpha_idx=0;
-        while(alpha_idx<hdist){
-            code = huffman_decode(bl_count, max_bl);
-            code = alpha[code];
-            if (code<16) {
-                prev_code = code;
                 dl_count[prev_code] ++;
-                dl_tree_len[alpha_idx++] = prev_code;
+                *tree++ = prev_code;
             }
             else {
                 if (code==16) {// Copy the previous code length 3 - 6 times.
@@ -485,28 +667,62 @@ uint8_t * deflate (uint8_t *dst, uint8_t *src, int s_len, deflate_t* ctx)
                 }
                 int count = n;
                 do {
-                    dl_tree_len[alpha_idx++] = prev_code;
+                    *tree++ = prev_code;
                 } while(--count);
             }
         }
+#endif
                 // коды дистанций по порядку кодирования
-        int max_dl = btree_max_blen(dl_count);
-        uint32_t dl_size = btree_size(dl_count, max_dl);
+        int min_dl = btree_min_blen(dl_count);
+        int max_dl = btree_max_blen(dl_count, min_dl, MAX_BITS);
+        uint32_t dl_size = btree_size(dl_count, min_dl, max_dl);
         uint16_t dl_alpha[dl_size];
-        btree_code_order(dl_alpha, dl_size, dl_count, dl_tree_len, hdist, max_dl);
-        if(DBG) {// отладка
+        btree_code_order(dl_alpha, dl_size, dl_count, dl_tree_len, hdist, min_dl, max_dl);
+#if 1
+        uint16_t dl_first_symbol[max_dl - min_dl+1];
+        uint16_t dl_first_code  [max_dl - min_dl+2];
+        //const int dl_T = 5;
+        int tab_dl = 4;
+        if (min_dl>tab_dl) tab_dl = min_dl;
+        else
+            if (max_dl<tab_dl) tab_dl = max_dl;
+        uint8_t  dl_search_start[1<<tab_dl];
+        uint8_t  dl_search_end  [1<<tab_dl];
+        __builtin_bzero(dl_search_start, 1<<tab_dl);
+        //__builtin_bzero(dl_search_end,   1<<tab_dl);
+        btree_codes_t dl_btree = {.search_start = dl_search_start,.search_end = dl_search_end,
+            .first_symbol = dl_first_symbol, .first_code = dl_first_code};
+        btree_codes(dl_count+min_dl, min_dl, max_dl-min_dl, &dl_btree, tab_dl);
+#endif // 0
+        if(0) {// отладка
             printf("\n  in order:");
             for(i=0; i<dl_size;i++)
-                printf(" %X", dl_alpha[i]);
+                printf(" %d:%d(%d)", i, dl_alpha[i], dl_tree_len[dl_alpha[i]]);
             printf("\n");
+            uint16_t dl_codes[hdist+1];
+            __builtin_bzero(dl_codes, (hdist+1)*2);
+            gen_codes(dl_tree_len, dl_codes, hdist, dl_count);
+            char code[MAX_BITS+1];
+            for(i=0; i<hdist;i++){
+                int j;
+                for(j=0;j<dl_tree_len[i]; j++)
+                    code[j] = dl_codes[i]&(1<<(dl_tree_len[i]-j-1))?'1':'0';
+
+                printf("\t%2d: %2d, %-.*s\n", i, dl_tree_len[i], dl_tree_len[i], code);
+            }
         }
         //printf("max_cwl %2d, max_dl=%2d, max_bl=%2d\n", max_cwl, max_dl, max_bl);
         // выполнить само декодирование
         int mlen, extra;// match length, extra bits
         uint32_t offset;// distance offset
+//        uint64_t ts=0, ts2=0;
         while(src<s_end){
-            uint32_t code = huffman_decode(cwl_count, max_cwl);
+            //ts-= __builtin_ia32_rdtsc();
+            uint32_t code;
+            code = huffman_decode2(&cwl_btree, min_cwl, max_cwl, tab_cwl);
+            //code = huffman_decode(cwl_count, max_cwl);
             code = cwl_alpha[code];
+            //ts+= __builtin_ia32_rdtsc();
             if (code<256){
                 *dst++ = code;
             } else {
@@ -514,14 +730,15 @@ uint8_t * deflate (uint8_t *dst, uint8_t *src, int s_len, deflate_t* ctx)
                     if(DBG)printf("EOB\n");
                     break;
                 }
-
                 mlen = fixed_length[code-257].length + 3;
                 extra= fixed_length[code-257].extra;
                 if (extra){
                     mlen += stream_read_bit(extra);
                 }
                 // distance decode
-                code = huffman_decode(dl_count, max_dl);
+                code = huffman_decode2(&dl_btree, min_dl, max_dl, tab_dl);
+                //code = huffman_decode(dl_count, max_dl);
+                //if (0 && code1 != code) _Exit(0xC0DE);
                 code = dl_alpha[code];// distance length alphabet
                 offset= fixed_distance[code].offset+1;
                 extra = fixed_distance[code].extra;
@@ -534,8 +751,9 @@ uint8_t * deflate (uint8_t *dst, uint8_t *src, int s_len, deflate_t* ctx)
                 dst+=mlen;
             }
         }
+        //if(1) printf("ts1=%lld ts2=%lld %d %d\n", ts, ts2, max_cwl, max_dl);
     }
-    ctx->s_end = src;
+    ctx->s_end  = src;
     ctx->stream = stream;
     ctx->n_bits = n_bits;
     return dst;
@@ -561,9 +779,9 @@ int main()
         0b11001100, 0b11101000, 0b00111010, 0b00001001, 0b01101101, 0b10001101, 0b01001001, 0b11000101,
         0b01011001, 0b11011111, 0b01110101, 0b11111001, 0b00000110, 0b00000000,
         };
-    int d_len = deflate(dst, test, sizeof(test)-1) - dst;
+    int d_len = deflate(dst, test, sizeof(test)-1, NULL) - dst;
     printf("dlen=%d: %s\n", d_len, dst);
-    d_len = deflate(dst, tst2, sizeof(tst2)) - dst;
+    d_len = deflate(dst, tst2, sizeof(tst2), NULL) - dst;
     printf("dlen=%d: %s\n", d_len, dst);
     return 0;
 }

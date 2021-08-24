@@ -32,7 +32,7 @@ static uint32_t ADLER32_update_(uint32_t adler, uint8_t *p, size_t len){
 #endif // 0
 #define mod65521(x) ((x) - 0xFFF1*(unsigned long)(((x)*0x80078071ULL)>>47))
 static uint32_t
-__attribute__((__target__("avx512vnni")))
+__attribute__((__target__("avx512vl","avx512vnni")))
 ADLER32_update_vnni(uint32_t adler, uint8_t *p, size_t len)
 {
     const int Nmax = 1024;// Евгенская магия 5552/32
@@ -47,7 +47,6 @@ ADLER32_update_vnni(uint32_t adler, uint8_t *p, size_t len)
                         0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,
                         16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31);
         do {
-            int i;
             int n = blocks>Nmax? Nmax: blocks;
             blocks -= n;
             s2+=s1*(n<<5);
@@ -113,7 +112,6 @@ ADLER32_update_512vnni(uint32_t adler, uint8_t *p, size_t len)
             32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,
             48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63);
         do {
-            int i;
             int n = blocks>Nmax? Nmax: blocks;
             blocks -= n;
             s2+=s1*(n<<6);
@@ -166,6 +164,26 @@ __asm volatile("# LLVM-MCA-END adler_512vnni");
     return (s2 << 16) | s1;
 }
 static
+uint32_t ADLER32_update_small(uint32_t adler, uint8_t *p, size_t len)
+{
+    const size_t Nmax = 5552;// Евгенская магия
+	uint32_t  s1 = (adler      ) & ADLER_MASK;
+	uint32_t  s2 = (adler >> 16) & ADLER_MASK;
+    do {
+        int n = len>Nmax? Nmax: len;
+        len-=n;
+        do {
+            s1 += *p++;// s1 + p0 + p1 + p2 + p3 ... MAX(s1) = 0xFFF0 + 0xFF*n
+            s2 += s1;// s2 + s1*n + p0*(n) + p1*(n-1) ... MAX(s2) = (n+1)*(0xFFF0 + 0xFF*n/2)
+        }while (--n);
+        s1-= (s1>>16)*0xFFF1u;// не полное редуцирование
+        s2-= (s2>>16)*0xFFF1u;
+    } while (len);
+    s1 = mod65521(s1);
+    s2 = mod65521(s2);
+    return (s2 << 16) | s1;
+}
+static
 uint32_t ADLER32_update_default(uint32_t adler, uint8_t *p, size_t len)
 {
 	uint32_t  s1 = (adler      ) & ADLER_MASK;
@@ -197,68 +215,9 @@ uint32_t ADLER32_update_default(uint32_t adler, uint8_t *p, size_t len)
         return p;
     }
     inline uint8_t* adler_sum(uint8_t *p, uint32_t n){
-        s2+=s1*n;
-        do {// в таком варианте быстрее, за счет паралельного исполнения
-            s1 += p[0];//*p++;// s1 + p0 + p1 + p2 + p3 ... MAX(s1) = 0xFFF0 + 0xFF*n
-            s2 += p[0]*n;//s1;// s2 + s1*n + p0*(n) + p1*(n-1) ... MAX(s2) = (n+1)*(0xFFF0 + 0xFF*n/2)
-            p++;
-        } while (--n);
         return p;
     }
 #if 0// 1 такт на байт, компактный код
-    const size_t Nmax = 5552;// Евгенская магия
-    do {
-        int n = len>Nmax? Nmax: len;
-        len-=n;
-        do {
-            s1 += *p++;// s1 + p0 + p1 + p2 + p3 ... MAX(s1) = 0xFFF0 + 0xFF*n
-            s2 += s1;// s2 + s1*n + p0*(n) + p1*(n-1) ... MAX(s2) = (n+1)*(0xFFF0 + 0xFF*n/2)
-        }while (--n);
-        s1-= (s1>>16)*0xFFF1u;// не полное редуцирование
-        s2-= (s2>>16)*0xFFF1u;
-    } while (len);
-    s1 = mod65521(s1);
-    s2 = mod65521(s2);
-#elif 0//defined(__AVX512VL__) // 7 тактов на 64
-        int i;
-        int blocks = n>>6;
-        n &= 63;
-        s2+=s1*n;
-        if(n) do {// в таком варианте быстрее, за счет паралельного исполнения
-            s1 += p[0];//*p++;// s1 + p0 + p1 + p2 + p3 ... MAX(s1) = 0xFFF0 + 0xFF*n
-            s2 += p[0]*n;//s1;// s2 + s1*n + p0*(n) + p1*(n-1) ... MAX(s2) = (n+1)*(0xFFF0 + 0xFF*n/2)
-            p++;
-        }while (--n);
-        if (blocks>0){
-            s2+=s1*(blocks<<6);
-            __m512i vs1={0}, vs2={0}, vs3={0};
-            __m512i E = _mm512_set1_epi8(64);
-            __m512i M = _mm512_set_epi8(
-                        1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,
-                        17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,
-                        33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,
-                        49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64);
-            int i;
-            for(i=0;i<blocks; i++) {// AVX512_VNNI + AVX512VL
-                __m512i v = _mm512_loadu_si512((void*)p); p+=64;
-                vs3 = _mm512_add_epi32(vs3, vs1);
-                vs1 = _mm512_dpbusd_epi32(vs1, v, E);// задержка 5 тактов, нужно сделать 5 таких команд с разными аргументами
-                vs2 = _mm512_dpbusd_epi32(vs2, v, M);
-            }
-            vs2 = _mm512_add_epi32(vs2, vs3);
-            __m128i v1 = _mm_add_epi32(
-                _mm_add_epi32(_mm512_extracti32x4_epi32(vs1, 0),_mm512_extracti32x4_epi32(vs1, 1)),
-                _mm_add_epi32(_mm512_extracti32x4_epi32(vs1, 2),_mm512_extracti32x4_epi32(vs1, 3)));
-            v1 = _mm_hadd_epi32 (v1,v1);
-            v1 = _mm_hadd_epi32 (v1,v1);
-            __m128i v2 = _mm_add_epi32(
-                _mm_add_epi32(_mm512_extracti32x4_epi32(vs2, 0),_mm512_extracti32x4_epi32(vs2, 1)),
-                _mm_add_epi32(_mm512_extracti32x4_epi32(vs2, 2),_mm512_extracti32x4_epi32(vs2, 3)));
-            v2 = _mm_hadd_epi32 (v2,v2);
-            v2 = _mm_hadd_epi32 (v2,v2);
-            s1 += _mm_extract_epi32(v1, 0)>>6;
-            s2 += _mm_extract_epi32(v2, 0);
-        }
 #else
         const int N=12;
         const int L=2;
@@ -287,10 +246,14 @@ uint32_t ADLER32_update_default(uint32_t adler, uint8_t *p, size_t len)
             s1-= (s1>>16)*0xFFF1u;
             s2-= (s2>>16)*0xFFF1u;
         }
-        len &= (1<<N)-1;
-        if(len) {
-            //s2+=s1*len;
-            p = adler_sum(p, len);
+        int n = len &((1<<N)-1);
+        if(n) {
+            s2+=s1*n;
+            do {// в таком варианте быстрее, за счет паралельного исполнения
+                s1 += p[0];//*p++;// s1 + p0 + p1 + p2 + p3 ... MAX(s1) = 0xFFF0 + 0xFF*n
+                s2 += p[0]*n;//s1;// s2 + s1*n + p0*(n) + p1*(n-1) ... MAX(s2) = (n+1)*(0xFFF0 + 0xFF*n/2)
+                p++;
+            } while (--n);
         }
         s1 = mod65521(s1);
         s2 = mod65521(s2);
@@ -362,9 +325,9 @@ int png_to_image(uint8_t *src, size_t s_len)
                 uint32_t crc = crc32_from_block(dst, d_len);//BE32(hdr->width)*BE32(hdr->height)*4);
                 uint32_t adler = ADLER32_update(1, dst, d_len);
                 if(adler==BE32(*(uint32_t *)(cdata+length-4)))
-                    printf("ADLER32 Check sum ..ok  %08X, len=%d crc=%08X\n", adler, d_len, crc);
+                    printf("ADLER32 Check sum ..ok  %08X, len=%d crc=%08X\n", adler, (int)d_len, crc);
                 else
-                    printf("ADLER32 Check sum ..fail %08X, len=%d crc=%08X\n", adler, d_len, crc);
+                    printf("ADLER32 Check sum ..fail %08X, len=%d crc=%08X\n", adler, (int)d_len, crc);
             }
         } else
         if (strncasecmp(ctype,"iend", 4)==0) {
