@@ -113,7 +113,7 @@ ADLER32_update_avx2(uint32_t adler, uint8_t *p, size_t len)
     int blocks = len>>6;
     if (blocks>0){
         //s2+=s1*(blocks<<5);
-        __m256i vs1={0}, vs2={0}, vs3={0};
+        __m256i vs1={0}, vs2={0}, vs3={0},Z={0};
 //        __m256i E = _mm256_set1_epi8(1);
         __m256i E = _mm256_set1_epi16(1);
         __m256i M = _mm256_set_epi8(
@@ -133,10 +133,10 @@ __asm volatile("# LLVM-MCA-BEGIN adler_avx2");
                 vs3 = _mm256_add_epi32(vs3, vs1);
                 __m256i v = _mm256_lddqu_si256((void*)p); p+=32;
                 __m256i v0 = _mm256_lddqu_si256((void*)p); p+=32;
-//                __m256i v1 = _mm256_sad_epu8 (v, Z);
-//                __m256i v3 = _mm256_sad_epu8 (v0, Z);
-                __m256i v1 = _mm256_maddubs_epi16(v, _mm256_set1_epi8(1));
-                __m256i v3 = _mm256_maddubs_epi16(v0, _mm256_set1_epi8(1));
+                __m256i v1 = _mm256_sad_epu8 (v, Z);
+                __m256i v3 = _mm256_sad_epu8 (v0, Z);
+//                __m256i v1 = _mm256_maddubs_epi16(v, _mm256_set1_epi8(1));
+//                __m256i v3 = _mm256_maddubs_epi16(v0, _mm256_set1_epi8(1));
                 __m256i v2 = _mm256_maddubs_epi16(v, M1);
                 __m256i v4 = _mm256_maddubs_epi16(v0, M);
 //                v1 = _mm256_madd_epi16 (v1, _mm256_set1_epi16(1));
@@ -270,28 +270,35 @@ static uint32_t
 __attribute__((__target__("avx512vl","avx512vnni")))
 ADLER32_update_vnni(uint32_t adler, uint8_t *p, size_t len)
 {
-    const int Nmax = 1024;// Евгенская магия 5552/32
+    const int Nmax = 512;// Евгенская магия 5552/32
 	uint32_t  s1 = (adler      ) & ADLER_MASK;
 	uint32_t  s2 = (adler >> 16) & ADLER_MASK;
-    int blocks = len>>5;
+    int blocks = len>>6;
     if (blocks>0){
         //s2+=s1*(blocks<<5);
         __m256i vs1={0}, vs2={0}, vs3={0};
         __m256i E = _mm256_set1_epi8(1);
         __m256i M = _mm256_set_epi8(
-                        0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,
-                        16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31);
+            0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,
+            16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31);
+        __m256i M1 = _mm256_set_epi8(
+            32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,
+            48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63);
+
         do {
             int n = blocks>Nmax? Nmax: blocks;
             blocks -= n;
-            s2+=s1*(n<<5);
+            s2+=s1*(n<<6);
             s2-=(s2>>16)*0xFFF1uL;
 __asm volatile("# LLVM-MCA-BEGIN adler_vnni");
             do{
                 vs3 = _mm256_add_epi32(vs3, vs1);
-                __m256i v = _mm256_lddqu_si256((void*)p); p+=32;
+                __m256i v = _mm256_loadu_si256((void*)p); p+=32;
+                __m256i v0 = _mm256_loadu_si256((void*)p); p+=32;
                 vs1 = _mm256_dpbusd_epi32(vs1, v, E);
-                vs2 = _mm256_dpbusd_epi32(vs2, v, M);
+                vs1 = _mm256_dpbusd_epi32(vs1, v0, E);
+                vs2 = _mm256_dpbusd_epi32(vs2, v, M1);
+                vs2 = _mm256_dpbusd_epi32(vs2, v0, M);
             } while(--n);
 __asm volatile("# LLVM-MCA-END adler_vnni");
             // быстрое и неполное редуцирование
@@ -302,7 +309,7 @@ __asm volatile("# LLVM-MCA-END adler_vnni");
         } while (blocks>0);
 
         vs2 = _mm256_add_epi32(vs2,vs1);
-        vs2 = _mm256_add_epi32(vs2,_mm256_slli_epi32(vs3,5));
+        vs2 = _mm256_add_epi32(vs2,_mm256_slli_epi32(vs3,6));
 // вставить сюда свертку по последнему фрагменту
         __m128i v1 = _mm_add_epi32(_mm256_extracti32x4_epi32(vs1, 0),_mm256_extracti32x4_epi32(vs1, 1));
         __m128i v2 = _mm_add_epi32(_mm256_extracti32x4_epi32(vs2, 0),_mm256_extracti32x4_epi32(vs2, 1));
@@ -316,7 +323,7 @@ __asm volatile("# LLVM-MCA-END adler_vnni");
         s1 = mod65521(s1);
         s2 = mod65521(s2);
     }
-    int n = len&31;
+    int n = len&63;
     if(n){
         s2+=s1*n;
         do {// в таком варианте быстрее, за счет паралельного исполнения
