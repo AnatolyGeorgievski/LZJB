@@ -610,10 +610,6 @@ int png_to_image(uint8_t *src, size_t s_len)
                 dst = malloc(isize+2048);// кто то пишет мимо
             }
         } else
-        if (strncasecmp(ctype,"text", 4)==0) {
-            int len = strlen((char*)cdata)+1;
-            printf("\t%s: %-.*s\n", (char*)cdata, length-len, (char*)cdata+len);
-        } else
         if (strncasecmp(ctype,"idat", 4)==0) {
             
             if (chunk==0){// без компрессии
@@ -656,7 +652,25 @@ int png_to_image(uint8_t *src, size_t s_len)
             default: break;
             }
             // return -1;
+        } else 
+        if (strncasecmp(ctype,"tEXt", 4)==0) {
+            int len = strlen((char*)cdata)+1;
+            printf("\t%s: %-.*s\n", (char*)cdata, length-len, (char*)cdata+len);
+        } else
+        if (strncasecmp(ctype,"zTXt", 4)==0) {// zTXt Compressed textual data
+
+            int len = strlen((char*)cdata)+2;
+//            uint8_t* txt = malloc(16*4096); txt[0]=0; 
+//            size_t chunk_size = deflate(txt, cdata+len, length-len, &ctx)-(txt);
+//            txt[chunk_size] = '\0';
+            printf("\t%s: %s\n", (char*)cdata, "...");
+//            puts(txt);
+//            for (int i=0; i<64;i++) printf("%02X ", txt[i]);
+//            free(txt);
+        } else 
+        if (strncasecmp(ctype,"tIME", 4)==0) {// 8. tIME Image last-modification time
         }
+
     }
     if (idata) free(idata);
     return 0;
@@ -678,7 +692,7 @@ static int _get_contents(char* filename, char** contents, size_t *length, void* 
     }
     return res==0;
 }
-int main()
+int main(int argc, char*arv[])
 {
     char* filename = "test6.png";
     uint8_t *contents=NULL;

@@ -110,7 +110,7 @@ static int _get_contents(char* filename, char** contents, size_t *length, void* 
     }
     return res==0;
 }
-int main()
+int main(int arc, char* argv[])
 {
     char* filename = "test2.gz";
     uint8_t *contents=NULL;
