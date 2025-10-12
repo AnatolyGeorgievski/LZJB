@@ -1,0 +1,10 @@
+# Compiled source #
+###################
+*.dll
+*.exe
+*.o
+*.so
+*.a
+*.zip
+*.gz
+*.png

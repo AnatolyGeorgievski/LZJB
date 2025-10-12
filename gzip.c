@@ -4,6 +4,8 @@
     https://www.ietf.org/rfc/rfc1952.txt
 
     Понадобилось для отладки Deflate на больших файлах
+
+    $ gcc -DTEST_GZIP -O3 -march=native -o gunzip gzip.c huffman.c crc.c deflate.c
  */
 #include <stdint.h>
 #include <stdio.h>

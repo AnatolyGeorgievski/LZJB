@@ -1,6 +1,8 @@
 /*! \brief Реализация распаковки графики PNG
     [RFC 2083] PNG: Portable Network Graphics, March 1997
     https://datatracker.ietf.org/doc/html/rfc2083
+
+    $ gcc -DTEST_PNG -O3 -march=native -o png png.c huffman.c crc.c deflate.c
 */
 #include <stdint.h>
 #include <stdio.h>
@@ -122,7 +124,7 @@ ADLER32_update_avx2(uint32_t adler, uint8_t *p, size_t len)
         __m256i M1 = _mm256_set_epi8(
             32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,
             48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63);
-
+        const __m256i P = _mm256_set1_epi32(0xFFF1uL);
         do {
             int n = blocks>Nmax? Nmax: blocks;
             blocks -= n;
@@ -149,7 +151,8 @@ __asm volatile("# LLVM-MCA-BEGIN adler_avx2");
             } while(--n);
 __asm volatile("# LLVM-MCA-END adler_avx2");
             // быстрое и неполное редуцирование
-            const __m256i P = _mm256_set1_epi32(0xFFF1uL);
+            //const __m256i P1 = _mm256_set1_epi16(0xFFF1uL);
+            //vs3 = _mm256_sub_epi32 (vs3, _mm256_blend_epi16(_mm256_mulhi_epu16(vs3,P1), _mm256_srli_epi32(_mm256_mullo_epi16(vs3,P1),16), 0x55));
             vs3 = _mm256_sub_epi32 (vs3, _mm256_mullo_epi32(_mm256_srli_epi32(vs3, 16), P));
             vs2 = _mm256_sub_epi32 (vs2, _mm256_mullo_epi32(_mm256_srli_epi32(vs2, 16), P));
             vs1 = _mm256_sub_epi32 (vs1, _mm256_mullo_epi32(_mm256_srli_epi32(vs1, 16), P));
@@ -525,16 +528,70 @@ struct _Zlib_Hdr {
 //      Compressed data blocks:        n bytes
 //      Check value:                   4 bytes
 };
+static size_t png_image_size(struct _PNG_Hdr *hdr){
+    unsigned n_bits = (hdr->bit_depth);
+    switch (hdr->color_type) {
+    case 0:// Grayscale depth=1,2,4,8,16
+        n_bits = 1*(hdr->bit_depth); break;
+    case 2:// RGB
+        n_bits = 3*(hdr->bit_depth); break;
+    case 4:// Grayscale+Alpha
+        n_bits = 2*(hdr->bit_depth); break;
+    case 6:// RGBA
+        n_bits = 4*(hdr->bit_depth); break;
+    case 3:// PLTE
+    default:
+        break;
+    }
+    return BE32(hdr->width)*BE32(hdr->height)*n_bits/8;    
+}
+struct _PNG_Hdr *png_header(uint8_t *src, size_t s_len){
+    if (__builtin_memcmp(src, magic, 8)!=0) return NULL;
+    src+=8;
+    struct _PNG_Hdr *hdr = NULL;
+    uint8_t *s_end = src+s_len;
+    while(src<s_end) {
+        uint32_t length = BE32(*(uint32_t *)src); src+=4;
+        char *ctype  = (char*)src; src+=4;
+        uint8_t *cdata  = src; src+=length;
 
+        if (src>s_end) break;
+        if (strncasecmp(ctype,"ihdr", 4)==0) {
+            hdr = (void*)cdata;
+            printf ("\twidth=%d height=%d bits=%d colors=%d compression=%d\n", BE32(hdr->width), BE32(hdr->height),
+                    hdr->bit_depth, hdr->color_type, hdr->compression);
+            unsigned n_bits = (hdr->bit_depth);
+            switch (hdr->color_type) {
+            case 0:// Grayscale depth=1,2,4,8,16
+                n_bits = 1*(hdr->bit_depth); break;
+            case 2:// RGB
+                n_bits = 3*(hdr->bit_depth); break;
+            case 4:// Grayscale+Alpha
+                n_bits = 2*(hdr->bit_depth); break;
+            case 6:// RGBA
+                n_bits = 4*(hdr->bit_depth); break;
+            case 3:// PLTE
+            default:
+                break;
+            }
+            return hdr;
+        }
+    }
+    return NULL;
+}
 int png_to_image(uint8_t *src, size_t s_len)
 {
     if (__builtin_memcmp(src, magic, 8)!=0) return -1;
     struct _PNG_Hdr *hdr = NULL;
     int chunk=0;
-    uint8_t *dst=NULL;
     uint8_t *s_end = src+s_len;
     src+=8;
     if(1) printf("PNG:\n");
+
+    uint8_t *dst=NULL;
+    uint8_t *idata = malloc(s_len - sizeof(struct _PNG_Hdr));
+    deflate_t ctx ={0};
+    size_t d_size = 0;
     while(src<s_end) {
         uint32_t length = BE32(*(uint32_t *)src); src+=4;
         char *ctype  = (char*)src; src+=4;
@@ -545,40 +602,67 @@ int png_to_image(uint8_t *src, size_t s_len)
         if (1) printf ("%-.*s crc=%08X  len=%d\n", 4, ctype, crc, length);
         if (strncasecmp(ctype,"ihdr", 4)==0) {
             hdr = (void*)cdata;
-            printf ("\twidth=%d height=%d bits=%d colors=%d compression=%d\n", BE32(hdr->width), BE32(hdr->height),
-                    hdr->bit_depth, hdr->color_type, hdr->compression);
-            dst = malloc(BE32(hdr->width)*BE32(hdr->height)*4+2048);// кто то пишет мимо
+            if (dst==NULL) {
+                printf ("\twidth=%d height=%d bits=%d colors=%d compression=%d\n", BE32(hdr->width), BE32(hdr->height),
+                        hdr->bit_depth, hdr->color_type, hdr->compression);
+                unsigned n_bits = (hdr->bit_depth);
+                size_t isize = png_image_size(hdr);
+                dst = malloc(isize+2048);// кто то пишет мимо
+            }
         } else
         if (strncasecmp(ctype,"text", 4)==0) {
             int len = strlen((char*)cdata)+1;
             printf("\t%s: %-.*s\n", (char*)cdata, length-len, (char*)cdata+len);
         } else
         if (strncasecmp(ctype,"idat", 4)==0) {
-            if (chunk==0 && cdata[0]==0){
-                uint32_t len = *(uint16_t*)(cdata+1);
-                printf("\tchunk length=%d\n", len);
-
-            } else {
-                deflate_t ctx={0};
-                size_t d_len = deflate(dst, cdata+2, length-6, &ctx)-dst;
-                printf("\ncompression =%1.2f%%\n", (float)(length-6)*100.f/(d_len));
-                //size_t ilen = BE32(hdr->width)*BE32(hdr->height)*4;
-                //if (ilen<d_len)  d_len = ilen;
-                uint32_t crc = crc32_from_block(dst, d_len);//BE32(hdr->width)*BE32(hdr->height)*4);
-                uint32_t adler = ADLER32_update(1, dst, d_len);
-                if(adler==BE32(*(uint32_t *)(cdata+length-4)))
-                    printf("ADLER32 Check sum ..ok  %08X, len=%d crc=%08X\n", adler, (int)d_len, crc);
-                else
-                    printf("ADLER32 Check sum ..fail %08X, len=%d crc=%08X\n", adler, (int)d_len, crc);
-            }
+            
+            if (chunk==0){// без компрессии
+                printf("\tchunk compression=%x flags=%x\n", cdata[0], cdata[1]);
+            } 
+            int offs = chunk==0?2:0;
+            chunk++;
+            __builtin_memcpy(idata + d_size, cdata+offs, length-offs);
+            d_size += length-offs;
         } else
         if (strncasecmp(ctype,"iend", 4)==0) {
+/*
+            size_t d_len = deflate(dst, idata, d_size-4, &ctx)-dst;
+                if (ctx.s_end-idata!= d_size-4) printf("\n fail %d/%d\n", ctx.s_end - idata, d_size-4);
+                printf("\ncompression =%1.2f%%\n", (float)(d_size-4)*100.f/(d_len));
+ */
+            ctx.s_end = idata;
+            size_t d_len = 0;
+            do {
+                size_t chunk_size = deflate(dst+d_len, ctx.s_end, d_size- 4 - (ctx.s_end - idata), &ctx)-(dst+d_len);
+                d_len+=chunk_size;
+                // printf("chunk size: %d %1.1f\n", chunk_size);
+            } while (d_size- 4 > (ctx.s_end - idata));
+            uint32_t adler = ADLER32_update(1, dst, d_len);
+            uint32_t adler2= BE32(*(uint32_t *)(idata+d_size-4));
+            printf("\tcompression =%1.2f%%\n", (float)(d_size-4)*100.f/(d_len));
+            if(adler==adler2)
+                printf("ADLER32 Check sum ..ok  %08X, len=%zd\n", adler, d_len);
+            else
+                printf("ADLER32 Check sum ..fail %08X!=%08X, len=%zd/%zd\n", adler, adler2, d_len, png_image_size(hdr));
             break;
+        } else 
+        if (strncasecmp(ctype,"sbit", 4)==0) 
+        {
+            if (hdr) switch (hdr->color_type) {
+            case 0: printf("\t(%hhd)\n", cdata[0]); break;
+            case 4: printf("\t(%hhd,%hhd)\n", cdata[0],cdata[1]); break;
+            case 2: printf("\t(%hhd,%hhd,%hhd)\n", cdata[0],cdata[1],cdata[2]); break;
+            case 6: printf("\t(%hhd,%hhd,%hhd,%hhd)\n", cdata[0],cdata[1],cdata[2],cdata[3]); break;
+            default: break;
+            }
+            // return -1;
         }
     }
+    if (idata) free(idata);
     return 0;
 }
 
+#if defined(TEST_PNG)
 static int _get_contents(char* filename, char** contents, size_t *length, void* error)
 {
     struct stat     statbuf;
@@ -594,7 +678,6 @@ static int _get_contents(char* filename, char** contents, size_t *length, void* 
     }
     return res==0;
 }
-#if defined(TEST_PNG)
 int main()
 {
     char* filename = "test6.png";
