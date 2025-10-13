@@ -1,9 +1,18 @@
 // https://www.ietf.org/rfc/rfc1952.txt
 /*! Распаковывает GZip формат
-    [RFC 1952]
-    https://www.ietf.org/rfc/rfc1952.txt
+    \see [RFC 1952]: GZIP file format specification version 4.3
+    (https://datatracker.ietf.org/doc/html/rfc1952)
 
     Понадобилось для отладки Deflate на больших файлах
+
+    \see [RFC 1951] DEFLATE Compressed Data Format Specification version 1.3
+    (https://datatracker.ietf.org/doc/html/rfc1951)
+
+    \sa [RFC 7932]: Brotli Compressed Data Format 
+    (https://datatracker.ietf.org/doc/html/rfc7932)
+    \sa [RFC 9841]: Shared Brotli Compressed Data Format
+    (https://datatracker.ietf.org/doc/html/rfc9841)
+    \sa (https://github.com/google/brotli)
 
     $ gcc -DTEST_GZIP -O3 -march=native -o gunzip gzip.c huffman.c crc.c deflate.c
  */

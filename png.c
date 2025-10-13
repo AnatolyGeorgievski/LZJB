@@ -600,16 +600,6 @@ int png_to_image(uint8_t *src, size_t s_len)
         uint32_t crc    = BE32(*(uint32_t *)(src)); src+=4;
         if (crc != crc32_from_block(cdata-4, length+4)) return -1;
         if (1) printf ("%-.*s crc=%08X  len=%d\n", 4, ctype, crc, length);
-        if (strncasecmp(ctype,"ihdr", 4)==0) {
-            hdr = (void*)cdata;
-            if (dst==NULL) {
-                printf ("\twidth=%d height=%d bits=%d colors=%d compression=%d\n", BE32(hdr->width), BE32(hdr->height),
-                        hdr->bit_depth, hdr->color_type, hdr->compression);
-                unsigned n_bits = (hdr->bit_depth);
-                size_t isize = png_image_size(hdr);
-                dst = malloc(isize+2048);// кто то пишет мимо
-            }
-        } else
         if (strncasecmp(ctype,"idat", 4)==0) {
             
             if (chunk==0){// без компрессии
@@ -621,11 +611,6 @@ int png_to_image(uint8_t *src, size_t s_len)
             d_size += length-offs;
         } else
         if (strncasecmp(ctype,"iend", 4)==0) {
-/*
-            size_t d_len = deflate(dst, idata, d_size-4, &ctx)-dst;
-                if (ctx.s_end-idata!= d_size-4) printf("\n fail %d/%d\n", ctx.s_end - idata, d_size-4);
-                printf("\ncompression =%1.2f%%\n", (float)(d_size-4)*100.f/(d_len));
- */
             ctx.s_end = idata;
             size_t d_len = 0;
             do {
@@ -642,6 +627,16 @@ int png_to_image(uint8_t *src, size_t s_len)
                 printf("ADLER32 Check sum ..fail %08X!=%08X, len=%zd/%zd\n", adler, adler2, d_len, png_image_size(hdr));
             break;
         } else 
+        if (strncasecmp(ctype,"ihdr", 4)==0) {
+            hdr = (void*)cdata;
+            if (dst==NULL) {
+                printf ("\twidth=%d height=%d bits=%d colors=%d compression=%d\n", BE32(hdr->width), BE32(hdr->height),
+                        hdr->bit_depth, hdr->color_type, hdr->compression);
+                unsigned n_bits = (hdr->bit_depth);
+                size_t isize = png_image_size(hdr);
+                dst = malloc(isize+2048);// кто то пишет мимо
+            }
+        } else
         if (strncasecmp(ctype,"sbit", 4)==0) 
         {
             if (hdr) switch (hdr->color_type) {
