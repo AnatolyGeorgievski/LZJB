@@ -1,4 +1,5 @@
 #include <stdint.h>
+#include <stdio.h>
 /*!
 https://www.compression.ru/download/articles/huff/huffman_1952_minimum-redundancy-codes.pdf
 https://webspace.science.uu.nl/~leeuw112/huffman.pdf
@@ -9,18 +10,15 @@ http://compression.ru/compression.ru/download/huff.html
 Рассчитать распределение кодов, частоту использования.
 Сформировать вектор весовых коэффициентов по массиву упорядоченному по убыванию
 */
-struct _Smap {
-    uint32_t dist:12;// смещение
-    uint32_t mlen:11;// длина кода
-    uint32_t nlit:9;// длина литерала
-};
+#include "huffman.h"
+
 /*!
     \param a - алфавит кодовых слов вывернутый по частоте использования,
     \param code_freq -- частота использования по кодам
     \param code_length - длина бит на код
     \param cl_len - длина алфавита, число используемых кодов.
-    bl_count -- распределение кодов по длинам бит (количество кодов в алфавите, которые имеют длину i
-    bl_max -- номер кода.
+    \param bl_count -- распределение кодов по длинам бит (количество кодов в алфавите, которые имеют длину i
+    \param bl_max -- номер кода.
  */
 
 
@@ -61,7 +59,7 @@ float huffman_estimate(const uint8_t *code_lengths, const uint16_t *weights, int
         sum1+= weights[i];
         sum += weights[i]*code_lengths[i];
     }
-    return (float)sum/sum1;
+    return sum1==0? 1.f:(float)sum/sum1;
 }
 /*! \brief составляет таблицу кодирования из таблицы длины кодов и длин */
 void huffman_gen_codes(uint8_t *code_lengths, int cl_len, uint8_t *bl_count, uint16_t *codes)
@@ -155,10 +153,11 @@ void huffman_tree(uint8_t *code_lengths, const uint16_t *weights, int cl_len)
         priority_queue_push (node_id, weight);
     }
     uint16_t left, right;
-    while(1) {
+    while(queue_len>1) {
         left  = priority_queue_pop();
         right = priority_queue_pop();
         if (queue_len==0) break;
+
         uint32_t weight = nodes[left].weight + nodes[right].weight;
         uint16_t node_id  = tree_node_new(left, right, weight);
         priority_queue_push (node_id, weight);
@@ -176,7 +175,7 @@ uint8_t* huffman_fixed_encode(uint8_t *dst, uint8_t *src, struct _Smap *map, int
     uint32_t code, nlit;
     uint32_t stream=3;// btype|final=01|1
     // nested functions
-    void stream_add_bits(uint32_t code, int bits){
+    uint8_t*  stream_add_bits(uint8_t *dst, uint32_t code, int bits){
         stream |= (code&((1<<bits)-1))<<n_bits;
         n_bits += bits;
         while (n_bits>=8) {
@@ -184,8 +183,9 @@ uint8_t* huffman_fixed_encode(uint8_t *dst, uint8_t *src, struct _Smap *map, int
             stream>>=8;
             n_bits -=8;
         }
+        return dst;
     }
-    void huffman_set_bits(uint32_t code, int bits){
+    uint8_t* huffman_set_bits(uint8_t *dst, uint32_t code, int bits){
         do {
             stream |= (code&1) << n_bits++;
             code>>=1;
@@ -195,6 +195,7 @@ uint8_t* huffman_fixed_encode(uint8_t *dst, uint8_t *src, struct _Smap *map, int
             stream>>=8;
             n_bits -=8;
         }
+        return dst;
     }
     for(i=0; i<map_len; i++){
         nlit = map[i].nlit;
@@ -202,15 +203,15 @@ uint8_t* huffman_fixed_encode(uint8_t *dst, uint8_t *src, struct _Smap *map, int
             code = *src++;
             if (code<144) {
                 code = code + 0b00110000;
-                huffman_set_bits(code, 8);
+                dst = huffman_set_bits(dst, code, 8);
             } else {
                 code = code-144 + 0b110010000;
-                huffman_set_bits(code, 9);
+                dst = huffman_set_bits(dst, code, 9);
             }
         } while (--nlit);
         code = map[i].mlen;
         if (code==0) {
-            huffman_set_bits(0, 7);
+            dst = huffman_set_bits(dst, 0, 7);
             break;
         }
         src += code;// пропуск
@@ -226,19 +227,19 @@ uint8_t* huffman_fixed_encode(uint8_t *dst, uint8_t *src, struct _Smap *map, int
         extra = bits>2?bits-2-1:0;
         index = (extra<<2)+(code>>extra); // индекс по таблице
         if (index<(280-256))
-            huffman_set_bits(index, 7);
+            dst = huffman_set_bits(dst, index, 7);
         else
-            huffman_set_bits(index-(280-256)+0b11000000, 8);
+            dst = huffman_set_bits(dst, index-(280-256)+0b11000000, 8);
         if (extra) {
-            stream_add_bits(code, extra);
+            dst = stream_add_bits(dst, code, extra);
         }
         code = map[i].dist;
         bits  = code==0?0: 32-__builtin_clz(code);
         extra = bits>1?bits-1-1:0;
         index = (extra<<1)+(code>>extra);// код по таблице
-        huffman_set_bits(index, 5);
+        dst = huffman_set_bits(dst, index, 5);
         if (extra) {
-            stream_add_bits(code, extra);
+            dst = stream_add_bits(dst, code, extra);
         }
         // stream_flush
     }
@@ -266,7 +267,7 @@ uint8_t* deflate_encode(uint8_t *dst, uint8_t *src, struct _Smap *map, int map_l
     uint32_t code, nlit;
     uint32_t stream=4;// btype|final=10|1
     // nested functions
-    void stream_add_bits(uint32_t code, int bits){
+    uint8_t* stream_add_bits(uint8_t* dst, uint32_t code, int bits){
         stream |= (code&((1<<bits)-1))<<n_bits;
         n_bits += bits;
         while (n_bits>=8) {
@@ -274,11 +275,12 @@ uint8_t* deflate_encode(uint8_t *dst, uint8_t *src, struct _Smap *map, int map_l
             stream>>=8;
             n_bits -=8;
         }
+        return dst;
     }
     void huffman_encode(int n, uint16_t* codes, uint8_t* code_lens){
         uint32_t code = codes[n];// коды предварительно развернуть
         int bits = code_lens[n];
-        stream_add_bits(code, bits);
+        dst = stream_add_bits(dst, code, bits);
     }
 
     for(i=0; i<map_len; i++){
@@ -299,7 +301,7 @@ uint8_t* deflate_encode(uint8_t *dst, uint8_t *src, struct _Smap *map, int map_l
         index = (extra<<2)+(code>>extra); // индекс по таблице
         huffman_encode(index+257, ctx->codes, ctx->code_lengths);
         if (extra) {
-            stream_add_bits(code, extra);
+            dst = stream_add_bits(dst, code, extra);
         }
         code = map[i].dist;
         bits  = code==0?0: 32-__builtin_clz(code);
@@ -307,7 +309,7 @@ uint8_t* deflate_encode(uint8_t *dst, uint8_t *src, struct _Smap *map, int map_l
         index = (extra<<1)+(code>>extra);// код по таблице
         huffman_encode(index, ctx->dl_codes, ctx->dl_code_lengths);
         if (extra) {
-            stream_add_bits(code, extra);
+            dst = stream_add_bits(dst, code, extra);
         }
         // stream_flush
     }

@@ -24,8 +24,8 @@ CC = $(CROSS_COMPILE)gcc $(OPTIMIZATION)
 AS = $(CROSS_COMPILE)gcc $(OPTIMIZATION)
 SIZE = $(CROSS_COMPILE)size
 OBJCOPY = $(CROSS_COMPILE)objcopy
-CFLAGS = -Werror -std=gnu11 -D_GNU_SOURCE
-CXXFLAGS = -Werror -std=c++17 -D_GNU_SOURCE
+CFLAGS = -Werror -std=gnu11
+CXXFLAGS = -Werror -std=c++17
 CFLAGS += -O3 
 # $(shell pkg-config --cflags )
 CXXFLAGS += -O3
@@ -43,6 +43,7 @@ endif
 SRC = lzjb.c lzjb_original.c huffman.c deflate.c gzip.c xxh64.c crc.c
 
 OUTPUT=lzjb2
+CFLAGS+= -DTEST_LZJB
 
 ASM_OBJECTS := $(ASMSRC:.s=.o)
 

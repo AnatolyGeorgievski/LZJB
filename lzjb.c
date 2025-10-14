@@ -23,10 +23,12 @@ https://www.kernel.org/doc/Documentation/lzo.txt
            distance = (H << 3) + D + 1
  */
 #include <stdint.h>
+#include "huffman.h"
 //#include <stdlib.h>// qsort
 #include <stdio.h>
 
-extern float huffman_estimate(const uint8_t *code_lengths, const uint16_t *weights, int cl_len);
+extern float    huffman_estimate(const uint8_t *code_lengths, const uint16_t *weights, int cl_len);
+extern void     huffman_tree(uint8_t *code_lengths, const uint16_t *weights, int cl_len);
 
 //#define	MATCH_BITS	6
 #define	MATCH_MIN	3
@@ -67,7 +69,13 @@ static void lzjb_memcpy(uint8_t *dst, uint8_t *src, uint32_t mlen){
 // This is Fibonacci hashing, also known as Knuth's multiplicative hash. The
 // constant is a prime close to 2^32/phi.
 
-
+// Этот вариант хеша лучше подходит для наших условий
+static inline uint32_t lz1_hash(uint8_t* src, int min_len){
+	uint32_t hash;// = *(uint16_t *)src;// %509;
+	hash = (src[0] *66) + src[1];
+	return hash;
+}
+#if 0
 static inline uint32_t lz1_hash_(uint8_t* src, int bits) {
 	uint32_t val = (uint32_t) src[0] | ((uint32_t) src[1] << 8);
 	return (val * 2654435761ULL) >> (32-16);
@@ -82,12 +90,6 @@ static inline uint32_t lz1_hash_1(uint8_t* src, int min_len){
 static inline uint32_t lz1_hash_2(uint8_t* src, int min_len){
 	uint32_t hash;// = *(uint16_t *)src;// %509;
 	hash = (src[0] *33) + (src[1] << 0)+5381;
-	return hash;
-}
-// Этот вариант хеша лучше подходит для наших условий
-static inline uint32_t lz1_hash(uint8_t* src, int min_len){
-	uint32_t hash;// = *(uint16_t *)src;// %509;
-	hash = (src[0] *66) + src[1];
 	return hash;
 }
 static inline uint32_t lz1_hash_0(uint8_t* src, int min_len){
@@ -105,7 +107,8 @@ static inline uint32_t lzjb_hash(uint8_t* src, int min_len)
 	hash += hash >> 5;
 	return hash;
 }
-#define STN_UNDEF 0
+#endif
+#define STN_UNDEF 0//0xFFFFu
 typedef struct _Hash _Hash_t;
 struct _Hash {
     uint16_t *bucket;
@@ -119,29 +122,24 @@ struct _Hash {
 #define LZ1_MAX_LEN (256+(1<<(16-LZ1_DEPTH))+1)
 #define LZ1_LEN_EXT ((1<<(16-LZ1_DEPTH))+2)
 #define LZ2_MAX_OFFSET (1<<LZ2_DEPTH)
-#define HT_CHAIN (1<<12)
+#define HT_CHAIN (1<<13)
 #define HT_MASK (HT_CHAIN-1)
 static void _hashtable_init(_Hash_t *htable,uint32_t nbucket)
 {
 	htable->nbucket = nbucket;
 	htable->nchain = 0;
-	//htable->bucket = malloc((nchain+nbucket)*sizeof(uint16_t));
-	int i;
-	for (i=0; i<nbucket; i++){
+	for (int i=0; i<nbucket+HT_CHAIN; i++)
 		htable->bucket[i]=STN_UNDEF;
-	}
-	for (i=0; i<=HT_MASK; i++){
-		htable->bucket[nbucket+i]=STN_UNDEF;
-	}
 }
 static uint16_t _hashtable_insert(_Hash_t *htable, uint32_t key)
 {
 	uint16_t *chain = htable->bucket + htable->nbucket;
 	uint16_t y = htable->nchain++;
+    //if (y>=HT_CHAIN) printf("$\n");
 	uint16_t* head = &htable->bucket[key % htable->nbucket];
     uint16_t prev = *head;
 	chain[y & HT_MASK] = prev;//(y - prev)>2048? STN_UNDEF: prev;
-	return *head = y;
+	return *head = y;//(y & HT_MASK);
 }
 static uint16_t _hashtable_next(_Hash_t *htable, uint16_t ref)
 {
@@ -269,20 +267,16 @@ uint8_t* lz1_compress(uint8_t *dst, uint8_t *src, size_t s_len)
 	printf ("avg depth=%1.1f max %d\n", (float)total_depth/total_subst, max_depth);// число подстановок
 	return dst;
 }
-struct _Smap {
-    uint32_t moffset:12;// смещение
-    uint32_t mlen:11;// длина кода
-    uint32_t nlit:9;// длина литерала
-};
-/*! Алгоритм сжатия в два прохода. На первом составляет таблицы длин. */
+/*! \brief Алгоритм сжатия в два прохода. На первом составляет таблицы длин. */
 struct _Smap * lz1_compress_(struct _Smap *map, uint8_t *src, size_t s_len)
 {
 	uint8_t* s_end  =src+s_len;
 	uint8_t* s_start  =src;
-	uint16_t bucket [HT_CHAIN+512];
+    const unsigned int n_bucket = 512;
+	uint16_t bucket [HT_CHAIN+n_bucket];
 	_Hash_t htable;
 	htable.bucket = bucket;
-	_hashtable_init(&htable, 512);
+	_hashtable_init(&htable, n_bucket);
 
     int nlit=0;
 	while (src < s_end) {
@@ -308,24 +302,26 @@ struct _Smap * lz1_compress_(struct _Smap *map, uint8_t *src, size_t s_len)
                 mlen = len;
                 moffset = (y - next);
             }
+            if (1 && mlen>2047) {
+                mlen=2047;
+                break;
+            }
 		}
         if(mlen>=2 && mlen<(1<<(8-LZ2_DEPTH))+2 && moffset<=LZ2_MAX_OFFSET){// 1 байт на mlen<6
             map->nlit = nlit;
 		    map->mlen = mlen;
-		    map->moffset = moffset-1;
+		    map->dist = moffset-1;
 		    map++;
 		    nlit= 0;
 		} else
-		if(mlen>=MATCH_MIN)
-        {
+		if(mlen>=MATCH_MIN) {
             map->nlit = nlit;
 		    map->mlen = mlen;
-		    map->moffset = moffset-1;
+		    map->dist = moffset-1;
             map++;
 		    nlit= 0;
 		} else {
-		    nlit++;
-		    src++;
+		    nlit++; src++;
             continue;
 		}
         int i;
@@ -334,12 +330,11 @@ struct _Smap * lz1_compress_(struct _Smap *map, uint8_t *src, size_t s_len)
             (void)_hashtable_insert(&htable, hash);
         }
         src+=mlen;
-
 	}
 	if(nlit) {
         map->nlit=nlit;
         map->mlen=0;
-        map->moffset=0;
+        map->dist=0;
         map++;
 	}
 	return map;
@@ -369,13 +364,17 @@ uint8_t* lz1_encode(uint8_t *dst, uint8_t *src, struct _Smap *map, int map_len)
                 *dst++ = *src++;
             }
             // условие выхода,
-            if (map->mlen==0) break;
+            if (map->mlen==0) {
+                //if (map_end - map!=1) printf("..break %d\n", map_end - map);
+                break;
+            }
         }
         copymask = _copymask_rotate(copymask);
         stream |= copymask;
         copymask = _copymask_rotate(copymask);
         uint32_t mlen = map->mlen;
-        uint32_t moffset = map->moffset;// единицу вычли уже чтобы помещалось в 11 бит.
+        uint32_t moffset = map->dist;// единицу вычли уже чтобы помещалось в 11 бит.
+        //printf("mlen=%d dist=%d\n", mlen, moffset);
         if(mlen>=2 && mlen<(1<<(8-LZ2_DEPTH))+2 && moffset<(1<<LZ2_DEPTH)){// 1 байт на mlen<6
             stream |= copymask;
             // формат кодирования mlen(2) | offset(6)
@@ -384,11 +383,14 @@ uint8_t* lz1_encode(uint8_t *dst, uint8_t *src, struct _Smap *map, int map_len)
 //		if(mlen>=MATCH_MIN) //-- эти условия выполнены на этапе разбора
         {
             if (mlen>=LZ1_LEN_EXT) {// формат кодирования 3 байта x1F | x11 | mlen(8) //34..256+33
+                //if (mlen>=LZ1_MAX_LEN) printf("mlen = %d offs=%d %d\n", mlen, moffset, mlen - LZ1_LEN_EXT);
                 *(uint16_t *)dst = ((~0) << LZ1_DEPTH) | (moffset);
                 dst+=2;
                 *dst++ = mlen - LZ1_LEN_EXT;
             } else {// формат кодирования mlen(5)| x11
                 *(uint16_t *)dst = ((mlen - MATCH_MIN) << LZ1_DEPTH) | (moffset);
+                //if (moffset>=(1u<<LZ1_DEPTH)) printf("mlen = %d offs=%d \n", mlen, moffset);
+                //if ((mlen - MATCH_MIN)>(0xFFFF>>LZ1_DEPTH)) printf("mlen = %d offs=%d \n", mlen, moffset);
                 dst+=2;
             }
 		}
@@ -433,15 +435,6 @@ void shell_sort_0(uint8_t *a, uint16_t * cl_count, int nmemb)//size_t nmemb, siz
 }
 //void __mask_memmove (void* d, void* s, int len) __attribute__((__target__("avx512vl","avx512bw")));
 static
-void __mask_memcopy (uint8_t* d, uint8_t* s, size_t len) {
-#if !defined(__AVX512F__)
-    int i;
-    for(i=0;i<len;i++)
-        d[i] = s[i];//*(dst-offset+i);
-#else // 0
-#endif
-}
-static
 void __mask_memmove (uint8_t* d, uint8_t* s, size_t len) {
 #if !defined(__AVX512F__)
     s+=len, d+=len;
@@ -482,7 +475,7 @@ void __mask_memmove (uint8_t* d, uint8_t* s, size_t len) {
 #endif // 0
 
 }
-/*! Сортировка Шелла. Без реккурсии, похоже что быстрая.  */
+/*! Сортировка Шелла. Без рекурсии, похоже что быстрая.  */
 static void shell_sort_5(uint8_t *a, uint16_t * cl_count, int size)
 {
   int inc, i, j, seq[2]={1,4,};// хорошие шаги 2^n*3^m
@@ -506,7 +499,7 @@ static void shell_sort_5(uint8_t *a, uint16_t * cl_count, int size)
 }
 // https://en.wikipedia.org/wiki/Insertion_sort
 // Хорошо работает на упорядоченном списке. Хорошо - значит мало операций копирования.
-// Этот алгоритм можно применять на спиках
+// Этот алгоритм можно применять на списках
 // Insertion sort для size<=16;
 static
 void shell_sort(uint8_t *a, uint16_t * cl_count, int size)
@@ -582,7 +575,7 @@ void lz1_hist(struct _Smap *map, int map_len)
             ml_count[ml]++;
             //if (ml)
             {
-                int dl = map[i].moffset==0?0:32-__builtin_clz(map[i].moffset);
+                int dl = map[i].dist==0?0:32-__builtin_clz(map[i].dist);
                 if (dl_max< dl) dl_max = dl;
                 dl_count[dl]++;
             }
@@ -590,7 +583,7 @@ void lz1_hist(struct _Smap *map, int map_len)
     }
     printf("max: %3d |%3d |%3d\n",ml_max, dl_max, cl_max);
     printf("bits|mlen|dist|nlit\n");
-    for(i=0;(i<=ml_max || i<=dl_max || i<=cl_max) && i<LZ1_DEPTH+1; i++){
+    for(i=0;(i<=ml_max || i<=dl_max || i<=cl_max) && i<LZ1_DEPTH+2; i++){
         printf("%3d |%3d |%3d |%3d\n", i, ml_count[i], dl_count[i], cl_count[i]);
     }
     //alpha_size = nz_count(ml_count, ml_max);// число не нулевых элементов
@@ -607,24 +600,24 @@ void lz1_hist(struct _Smap *map, int map_len)
     //quick_sort(ml_alpha, ml_count, 0, ml_len-1);
     if (1){
         uint16_t weights[ml_len];
-        printf("mlen in order:");
+        uint8_t ml_code_lengths[ml_len];
+        printf("mlen in order (%d):", ml_len);
         for(i=0; i<ml_len;i++){
             printf(" %d", ml_alpha[i]);
             weights[i] = ml_count[ml_alpha[i]];
         }
         printf(" (%d,%d)\n", quick_count,quick_depth);
         quick_count=quick_depth=0;
-        uint8_t ml_code_lengths[ml_len];//
-        extern void huffman_tree(uint8_t *code_lengths, const uint16_t *weights, int cl_len);
+        if (ml_len>1) {
         huffman_tree(ml_code_lengths, weights, ml_len);
         float ratio =
         huffman_estimate(ml_code_lengths, weights, ml_len);
         printf("mlen lengths :");
         for(i=0; i<ml_len;i++){
-            printf(" %d(%d)", ml_code_lengths[i], weights[i]);
-//            weights[i] = ml_count[ml_alpha[i]];
+            printf(" %d(%d)", (int)ml_code_lengths[i], (int)weights[i]);
         }
-        printf(" ratio=%1.2f%%\n", ratio/3);
+        printf(" ratio=%1.2f%%\n", ratio*100.f/3);
+        }
     }
 
     for (i=0; i<=dl_max;i++){
@@ -671,18 +664,18 @@ void lz1_hist(struct _Smap *map, int map_len)
 
 
 }
-extern uint8_t* huffman_fixed_encode(uint8_t *dst, uint8_t *src, struct _Smap *map, int map_len);
 
 uint8_t* lz1_compress_1(uint8_t *dst, uint8_t *src, size_t s_len)
 {
-    struct _Smap map[4096];
+    struct _Smap map[s_len];
     int m_count = lz1_compress_(map, src, s_len) - map;
-    lz1_hist(map, m_count);
+    if(0) lz1_hist(map, m_count);
+    //if(m_count>s_len/2) printf("s_len %d\n", m_count);
     // выбор стратегии на базе гистограммы
-    uint8_t buf[4096];
-    int h_len = huffman_fixed_encode(buf, src, map, m_count)-buf;
+    //uint8_t buf[4096];
+    int h_len = 0;//huffman_fixed_encode(buf, src, map, m_count)-buf;
     int d_len = lz1_encode(dst, src, map, m_count)-dst;
-    printf("Huffman fixed size=%1.2f%% / LZJB2=%1.2f%%\n",
+    if(0) printf("Huffman fixed size=%1.2f%% / LZJB2=%1.2f%%\n",
            (float)h_len*100.f/s_len, (float)d_len*100.f/s_len);
 
     return dst+d_len;
@@ -771,7 +764,7 @@ uint8_t* lz1_decompress(uint8_t *dst, uint8_t *src, size_t s_len)
     return dst;
 }
 
-
+#ifdef TEST_LZJB
 extern size_t
 lzjb_compress(void *s_start, void *d_start, size_t s_len, size_t d_len, int n);
 #include <locale.h>
@@ -784,24 +777,31 @@ int main(int argc, char *argv[]){
 	if (filename==NULL) return -1;
 	FILE* fp = fopen(filename, "rb");
 	if (fp==NULL) return -1;
-	uint8_t buf[4096];
-	uint8_t buf2[4096+512];
-	uint8_t out[4096+512];
+#define BUFF_SIZE 4096*2
+	uint8_t buf[BUFF_SIZE];
+	uint8_t buf2[BUFF_SIZE+512];
+	uint8_t out[BUFF_SIZE+512];
 	size_t len, tlen=0;
 	uint32_t cavg=0, zavg=0;
-	while((len = fread(buf, 1, 4096, fp))!=0) {
-        size_t clen = lzjb_compress(buf, out, len, 4096, 0);
+	while((len = fread(buf, 1, BUFF_SIZE, fp))>0) {
+        // size_t clen = lzjb_compress(buf, out, len, 4096, 0);
         size_t zlen = lz1_compress_1(out, buf, len) - out;
         size_t xlen = lz1_decompress(buf2, out, zlen) - buf2;
-        cavg += clen;
+        // cavg += clen;
         zavg += zlen;
         tlen += len;
-        if (xlen==len && __builtin_memcmp(buf2, buf, len)==0) printf("..ok ");
-        printf("compress ratio =%1.3f / %1.3f\n", (float)clen/len, (float)zlen/len);
+        if (xlen==len && __builtin_memcmp(buf2, buf, len)==0) { 
+            //printf("..ok "); 
+        } else {
+            printf("..fail %d<>%d zlen=%d %d\n", xlen, len, zlen, __builtin_memcmp(buf2, buf, xlen-5)==0);
+            break;
+        }
+        if (1) printf("ratio =%1.3f\r",/* (float)clen/len, */(float)zlen/len);
 
 	}
 	fclose(fp);
-	printf("Avg. compress ratio =%1.3f / %1.2f%% (%d B)\n", (float)cavg/tlen, (float)zavg/tlen*100.0, (uint32_t)tlen);
+	printf("Avg. compression ratio =%1.3f / %1.2f%% (%zu B)\n", (float)cavg/tlen, (float)zavg/tlen*100.0, tlen);
 	//lz_decompress(buf, out, clen);
 	return 0;
 }
+#endif

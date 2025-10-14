@@ -528,6 +528,9 @@ struct _Zlib_Hdr {
 //      Compressed data blocks:        n bytes
 //      Check value:                   4 bytes
 };
+/*! \brief 
+    \return 
+ */
 static size_t png_image_size(struct _PNG_Hdr *hdr){
     unsigned n_bits = (hdr->bit_depth);
     switch (hdr->color_type) {
@@ -687,14 +690,18 @@ static int _get_contents(char* filename, char** contents, size_t *length, void* 
     }
     return res==0;
 }
-int main(int argc, char*arv[])
+int main(int argc, char*argv[])
 {
-    char* filename = "test6.png";
-    uint8_t *contents=NULL;
-    size_t length=0;
-    _get_contents(filename, (char**)&contents, &length, NULL);
-    png_to_image(contents, length);
-    free(contents);
+    char* filename = "test.png";
+    for (int i=1; i<argc;i++) {
+        uint8_t *contents=NULL;
+        size_t length=0;
+        filename = argv[i];
+        if (_get_contents(filename, (char**)&contents, &length, NULL)){
+            png_to_image(contents, length);
+            free(contents);
+        }
+    }
     return 0;
 }
 #endif // defined
