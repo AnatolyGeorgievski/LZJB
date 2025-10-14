@@ -364,17 +364,13 @@ uint8_t* lz1_encode(uint8_t *dst, uint8_t *src, struct _Smap *map, int map_len)
                 *dst++ = *src++;
             }
             // условие выхода,
-            if (map->mlen==0) {
-                //if (map_end - map!=1) printf("..break %d\n", map_end - map);
-                break;
-            }
+            if (map->mlen==0) break;
         }
         copymask = _copymask_rotate(copymask);
         stream |= copymask;
         copymask = _copymask_rotate(copymask);
         uint32_t mlen = map->mlen;
         uint32_t moffset = map->dist;// единицу вычли уже чтобы помещалось в 11 бит.
-        //printf("mlen=%d dist=%d\n", mlen, moffset);
         if(mlen>=2 && mlen<(1<<(8-LZ2_DEPTH))+2 && moffset<(1<<LZ2_DEPTH)){// 1 байт на mlen<6
             stream |= copymask;
             // формат кодирования mlen(2) | offset(6)
@@ -383,14 +379,11 @@ uint8_t* lz1_encode(uint8_t *dst, uint8_t *src, struct _Smap *map, int map_len)
 //		if(mlen>=MATCH_MIN) //-- эти условия выполнены на этапе разбора
         {
             if (mlen>=LZ1_LEN_EXT) {// формат кодирования 3 байта x1F | x11 | mlen(8) //34..256+33
-                //if (mlen>=LZ1_MAX_LEN) printf("mlen = %d offs=%d %d\n", mlen, moffset, mlen - LZ1_LEN_EXT);
                 *(uint16_t *)dst = ((~0) << LZ1_DEPTH) | (moffset);
                 dst+=2;
                 *dst++ = mlen - LZ1_LEN_EXT;
             } else {// формат кодирования mlen(5)| x11
                 *(uint16_t *)dst = ((mlen - MATCH_MIN) << LZ1_DEPTH) | (moffset);
-                //if (moffset>=(1u<<LZ1_DEPTH)) printf("mlen = %d offs=%d \n", mlen, moffset);
-                //if ((mlen - MATCH_MIN)>(0xFFFF>>LZ1_DEPTH)) printf("mlen = %d offs=%d \n", mlen, moffset);
                 dst+=2;
             }
 		}
@@ -667,16 +660,17 @@ void lz1_hist(struct _Smap *map, int map_len)
 
 uint8_t* lz1_compress_1(uint8_t *dst, uint8_t *src, size_t s_len)
 {
-    struct _Smap map[s_len];
+    struct _Smap map[s_len/2];
     int m_count = lz1_compress_(map, src, s_len) - map;
     if(0) lz1_hist(map, m_count);
-    //if(m_count>s_len/2) printf("s_len %d\n", m_count);
     // выбор стратегии на базе гистограммы
-    //uint8_t buf[4096];
-    int h_len = 0;//huffman_fixed_encode(buf, src, map, m_count)-buf;
     int d_len = lz1_encode(dst, src, map, m_count)-dst;
-    if(0) printf("Huffman fixed size=%1.2f%% / LZJB2=%1.2f%%\n",
+    if(0) {
+        uint8_t buf[s_len];
+        int h_len = huffman_fixed_encode(buf, src, map, m_count)-buf;
+        printf("Huffman fixed size=%5.2f%% / LZJB2=%5.2f%%\n",
            (float)h_len*100.f/s_len, (float)d_len*100.f/s_len);
+    }
 
     return dst+d_len;
 }
@@ -699,13 +693,11 @@ static inline void _memmove_x64(uint8_t* dst, uint8_t* s, size_t mlen)
 static inline void _memcpy_x64(uint8_t* dst, uint8_t* s, size_t mlen)
 {
     int i;
-    if(1) {
     for(i=0; i<(mlen>>3); i++) {
         *(uint64_t*)dst = *(uint64_t*)s;
         dst+=8, s+=8;
     }
     mlen&=7;
-    }
     for(i=0; i<(mlen); i++)
         *dst++ = *s++;
 }
@@ -744,13 +736,10 @@ uint8_t* lz1_decompress(uint8_t *dst, uint8_t *src, size_t s_len)
                 uint32_t data = *(uint16_t* )src; src+=2;
                 offset = (data&((1<<LZ1_DEPTH)-1)) + 1;
                 mlen   = (data>>LZ1_DEPTH)+3;
-                    //printf("&(%d:%d)", offset, mlen);
-                if (mlen==LZ1_LEN_EXT) {
+                if (mlen==LZ1_LEN_EXT)
                     mlen += *src++;
-                }
             }
-            if (1 && mlen>0)
-            {
+            if (mlen>0) {
                 _memmove_x64(dst, dst-offset, mlen);
                 dst += mlen;
             } else {
@@ -777,10 +766,10 @@ int main(int argc, char *argv[]){
 	if (filename==NULL) return -1;
 	FILE* fp = fopen(filename, "rb");
 	if (fp==NULL) return -1;
-#define BUFF_SIZE 4096*2
+#define BUFF_SIZE 4096*4
 	uint8_t buf[BUFF_SIZE];
-	uint8_t buf2[BUFF_SIZE+512];
-	uint8_t out[BUFF_SIZE+512];
+	uint8_t buf2[BUFF_SIZE+BUFF_SIZE/8];
+	uint8_t out[BUFF_SIZE+BUFF_SIZE/8];
 	size_t len, tlen=0;
 	uint32_t cavg=0, zavg=0;
 	while((len = fread(buf, 1, BUFF_SIZE, fp))>0) {
