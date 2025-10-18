@@ -63,4 +63,8 @@ https://project-george.blogspot.com/2021/07/lzo-vs-lzjb.html
 
 Декомпрессия: RLE, BLOCK-READ, SCAN-ADD, общая экспонента по группе.
 
-* [[2506.18062](https://arxiv.org/pdf/2506.18062)] Floating-Point Data Transformation for Lossless Compression
+* P. Ratanaworabhan, Jian Ke and M. Burtscher, "Fast lossless compression of scientific floating-point data," Data Compression Conference (DCC'06), Snowbird, UT, USA, 2006, pp. 133-142, doi: 10.1109/DCC.2006.35.
+* P. Lindstrom and M. Isenburg, "Fast and Efficient Compression of Floating-Point Data," in IEEE Transactions on Visualization and Computer Graphics, vol. 12, no. 5, pp. 1245-1250, Sept.-Oct. 2006, doi: [10.1109/TVCG.2006.143](https://doi.org/10.1109/TVCG.2006.143).
+* [[2506.18062](https://arxiv.org/pdf/2506.18062)] Floating-Point Data Transformation for Lossless Compression, 2025
+* (https://github.com/LLNL/fpzip) 
+* (https://github.com/ariya/FastLZ)

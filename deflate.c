@@ -184,7 +184,7 @@ static uint16_t* btree_code_order(uint16_t *alphabet, int alpha_size, uint8_t *b
     return alphabet;
 }
 
-#include <intrin.h>
+#include <x86intrin.h>
 inline
 unsigned int __shrd(unsigned int into, unsigned int from, unsigned int c)
 {

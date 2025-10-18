@@ -16,7 +16,7 @@ After step 3, the 32 high-order coefficients of C will be 0.
 #include <stdint.h>
 #if defined(__PCLMUL__)
 
-#include <intrin.h>
+#include <x86intrin.h>
 typedef uint64_t poly64x2_t __attribute__((__vector_size__(16)));
 typedef uint64_t poly64x4_t __attribute__((__vector_size__(32)));
 typedef  int64_t v2di __attribute__((__vector_size__(16)));
@@ -66,7 +66,7 @@ static const struct _CRC_ctx CRC32B_ctx= {
 [ 0] = {0xCCAA009E, 0x00000001},// x^{95}, x^{31}
 }};
 
-
+#if defined(__AVX512VL__)
 uint32_t
 __attribute__((__target__("vpclmulqdq","avx512vl")))
 	CRC64B_update_N_(const struct _CRC_ctx * ctx,  uint32_t crc, uint8_t *data, int len){
@@ -87,7 +87,7 @@ __attribute__((__target__("vpclmulqdq","avx512vl")))
 	len &= 15;
 	return c[1];
 }
-
+#endif
 static uint32_t
 __attribute__((__target__("pclmul")))
 CRC64B_update_N(const struct _CRC_ctx * ctx,  uint32_t crc, uint8_t *data, int len){
@@ -183,7 +183,7 @@ __asm volatile("# LLVM-MCA-END clmul");
 
 uint32_t crc32_from_block(uint8_t *src, size_t len)
 {
-    uint32_t crc = ~0UL;
+    uint32_t crc = ~0U;
     crc = CRC64B_update_N(&CRC32B_ctx, crc, src, len);
     //crc = CRC32B_update_N(crc, src, len);
     return ~crc;
@@ -205,7 +205,7 @@ static uint32_t CRC32B_update(uint32_t crc, unsigned char val){
 uint32_t crc32_from_block(uint8_t *src, size_t len)
 {
     int i;
-    uint32_t crc = ~0UL;
+    uint32_t crc = ~0U;
     for(i=0; i<len; i++)
         crc = CRC32B_update(crc, src[i]);
     return ~crc;

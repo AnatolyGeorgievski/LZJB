@@ -1,7 +1,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <sys/types.h>
-#include <sys/param.h>
+//#include <sys/param.h>
 
 #define	NBBY	8 // число бит в байте
 #define	MATCH_BITS	6

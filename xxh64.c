@@ -1,4 +1,5 @@
 #include <stdint.h>
+#include <stddef.h>
 static const uint64_t Prime1 = 11400714785074694791ULL;
 static const uint64_t Prime2 = 14029467366897019727ULL;
 static const uint64_t Prime3 =  1609587929392839161ULL;

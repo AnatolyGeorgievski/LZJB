@@ -147,7 +147,7 @@ static uint16_t _hashtable_next(_Hash_t *htable, uint16_t ref)
     return chain[ref & HT_MASK];
 }
 
-#include <intrin.h>
+#include <x86intrin.h>
 struct _stream {
     uint8_t copymask;
     uint8_t* stream;
@@ -782,7 +782,7 @@ int main(int argc, char *argv[]){
         if (xlen==len && __builtin_memcmp(buf2, buf, len)==0) { 
             //printf("..ok "); 
         } else {
-            printf("..fail %d<>%d zlen=%d %d\n", xlen, len, zlen, __builtin_memcmp(buf2, buf, xlen-5)==0);
+            printf("..fail %zd<>%zd zlen=%zd %d\n", xlen, len, zlen, __builtin_memcmp(buf2, buf, xlen-5)==0);
             break;
         }
         if (1) printf("ratio =%1.3f\r",/* (float)clen/len, */(float)zlen/len);
