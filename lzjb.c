@@ -544,8 +544,129 @@ void quick_sort(uint8_t* array, uint16_t * cl_count, int l, int r)
           mas[++pos] = i;
     }
 */
+#include <math.h>
+void lz1_segments(uint8_t *data, size_t len){
+#define Ns 8
+    uint32_t seg_sum[Ns]={0}, seg_or[Ns]={0}, seg_nor[Ns]={0}, seg_and[Ns]={0};
+    float seg_s2 [Ns]={0};
+
+    int j=0;
+    int e1=0;
+    int e2=0;
+    int e3=0;
+    for (j=0; j<len; j+=2){
+        uint16_t f = *(uint16_t*)(data+j);
+        if ((0x7FFF & f)>=0x7C00) break;
+        if ((0x7C00 & f)==0) e1++;
+        if ((0x7FFF & f)>=0x7F80) e2++;
+        if ((0x7F80 & f)==0) e3++;
+    }
+    if (j==len) printf("type = float16 finite\n");
+    if (e1==0) printf("type = float16 normal\n");
+    if (e2==0) printf("type = bfloat16 finite\n");
+    if (e3==0) printf("type = bfloat16 normal\n");
+
+    if (j==len && 0) {// float
+        float mu = 0.125f;
+        float prev = *(_Float16*)(data);
+        uint32_t N = len/2 -1;
+        float sum=0, dev=0;
+        for (j=2; j<len; j+=2){
+            float v = *(_Float16*)(data+j);
+            *(_Float16*)(data+j) = v-prev;
+            sum += v-prev;
+            prev = v*mu+prev*(1.f-mu);
+        }
+        for (j=2; j<len; j+=2){
+            float v = *(_Float16*)(data+j);
+            v -= sum/N;
+            dev += v*v;
+        }
+        printf ("float16 :avg=%7.3f|%7.3f|\n", sum/N, sqrtf(dev/N));
+        //return;
+    }
+    if (e2==0){// bfloat16
+        float mu = 0.5f;
+        float prev = *(__bf16*)(data);
+        int32_t min = +256;
+        int32_t max = -256;
+        uint32_t N = len/2 -1;
+        float sum=0, dev=0;
+        int e_max = -128, e_min = +128;
+        for (j=2; j<len; j+=2){
+            float v = *(__bf16*)(data+j);
+            *(__bf16*)(data+j) = v-prev;
+            int e;
+            float m = frexpf((v-prev), &e);
+            float p = 128.f;
+            int32_t s = roundf(m*p);// roundscale ([0.5, 1))
+            if (s==128) {s>>=1, e++; }
+            float g = ldexpf(s/p, e);
+            if (fabsf(v-prev)<1.e+5f &&  fabsf(g-(v-prev))>0.008f*fabsf(v-prev)) { printf ("%f<>%f\n", g, (v-prev)); _Exit(1); }
+            //float m = fabsf(v-prev);
+            if (e<e_min) e_min = e;
+            if (e>e_max) e_max = e;
+            if (s<min) min = s;
+            if (s>max) max = s;
+            sum += v-prev;
+            prev = v*mu+prev*(1.f-mu);
+        }
+        for (j=2; j<len; j+=2){
+            float v = *(__bf16*)(data+j);
+            v -= sum/N;
+            dev += v*v;
+        }
+        printf ("bfloat16:avg=%7.3f|%7.3f|m=%d-%d|2^%d %d\n", sum/N, sqrtf(dev/N), min, max, e_max, e_max-e_min);
+        uint16_t *src = malloc(len);
+        __builtin_memcpy(src, data, len);
+        for (j=0; j<len/2; j++){
+            data[j] = (uint8_t)(src[j]>>7);
+            data[j+len/2] = (uint8_t)((src[j]<<1) | (src[j]>>15));// этот сегмент не пакуется
+        }
+        free(src);
+        return;
+    }
+
+    float prev[Ns];
+    for (int k=0; k<Ns; k++){
+        prev[k] = data[k];
+    }
+    float mu = 0.125f;
+    for (int i=Ns; i<len; i+=Ns){
+        for (int k=0; k<Ns; k++){
+            seg_sum[k] += data[i+k];
+            float d = (float)data[i+k] - prev[k];
+            //uint8_t d = data[i+k] - prev[k];
+            prev[k] = data[i+k]*mu+prev[k]*(1.f-mu);
+            //prev[k] = data[i+k];
+            seg_s2 [k] += d;
+            seg_or [k] |=(uint8_t)d;
+            seg_nor[k] &=~(uint8_t)d;// не используются
+            seg_and[k] &=(uint8_t)d;// установлены
+        }
+    }
+    uint32_t N = len/Ns;
+    float seg_dev[Ns] = {0};
+    for (int k=0; k<Ns; k++){
+        prev[k] = seg_s2 [k]/(N-1);
+    }
+    for (int i=Ns; i<len; i+=Ns){
+        for (int k=0; k<Ns; k++){
+            float d = (float)data[i+k] - prev[k];
+            prev[k] = data[i+k]*mu+prev[k]*(1.f-mu);
+            //data[i+k] = (uint8_t)d;
+            float v = (float)d - (float)seg_s2[k]/(N-1); 
+            seg_dev[k] += v*v;
+            
+        }
+    }
+    printf ("#|  sum  |std.dev|msk|\n");
+    for (int k=0; k<Ns; k++){
+        printf ("%d|%7.3f|%7.1f|%3x|\n",k,(float)seg_s2[k]/N, sqrtf((float)seg_dev[k]/(N-1)), seg_and[k] | seg_nor[k]);
+    }
 
 
+}
 /*! \brief строит гистограмму */
 void lz1_hist(struct _Smap *map, int map_len)
 {
@@ -660,14 +781,16 @@ void lz1_hist(struct _Smap *map, int map_len)
 
 uint8_t* lz1_compress_1(uint8_t *dst, uint8_t *src, size_t s_len)
 {
+#define DBG 1
     struct _Smap map[s_len/2];
+    if(0) lz1_segments(src, s_len);
     int m_count = lz1_compress_(map, src, s_len) - map;
     if(0) lz1_hist(map, m_count);
     // выбор стратегии на базе гистограммы
     int d_len = lz1_encode(dst, src, map, m_count)-dst;
-    if(0) {
+    if(1) {
         uint8_t buf[s_len];
-        int h_len = huffman_fixed_encode(buf, src, map, m_count)-buf;
+        int h_len = 1;//huffman_fixed_encode(buf, src, map, m_count)-buf;
         printf("Huffman fixed size=%5.2f%% / LZJB2=%5.2f%%\n",
            (float)h_len*100.f/s_len, (float)d_len*100.f/s_len);
     }
@@ -768,8 +891,8 @@ int main(int argc, char *argv[]){
 	if (fp==NULL) return -1;
 #define BUFF_SIZE 4096*4
 	uint8_t buf[BUFF_SIZE];
-	uint8_t buf2[BUFF_SIZE+BUFF_SIZE/8];
-	uint8_t out[BUFF_SIZE+BUFF_SIZE/8];
+	uint8_t buf2[BUFF_SIZE+BUFF_SIZE/4];
+	uint8_t out[BUFF_SIZE+BUFF_SIZE/4];
 	size_t len, tlen=0;
 	uint32_t cavg=0, zavg=0;
 	while((len = fread(buf, 1, BUFF_SIZE, fp))>0) {
